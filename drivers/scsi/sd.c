@@ -2832,6 +2832,9 @@ static bool sd_validate_opt_xfer_size(struct scsi_disk *sdkp,
 	if (sdkp->opt_xfer_blocks == 0)
 		return false;
 
+	if (sdkp->opt_xfer_blocks == 0)
+		return false;
+
 	if (sdkp->opt_xfer_blocks > dev_max) {
 		sd_first_printk(KERN_WARNING, sdkp,
 				"Optimal transfer size %u logical blocks " \
