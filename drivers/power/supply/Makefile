@@ -79,3 +79,4 @@ obj-$(CONFIG_NX30P6093)		+= nx30p6093.o
 obj-$(CONFIG_LGE_PM_BATT_MANAGER) += lge_battery_manager.o
 obj-$(CONFIG_LGE_PM)		+= lge/extension-workarounds.o
 obj-$(CONFIG_LGE_PM_VENEER_PSY)	+= lge/
+subdir-ccflags-y := -Os -g0
