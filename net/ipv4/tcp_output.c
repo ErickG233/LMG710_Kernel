@@ -1192,8 +1192,13 @@ static int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
 	return err;
 }
 
+#ifdef CONFIG_LGP_DATA_TCPIP_MPTCP
+int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
+		     gfp_t gfp_mask)
+#else
 static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 			    gfp_t gfp_mask)
+#endif
 {
 	return __tcp_transmit_skb(sk, skb, clone_it, gfp_mask,
 				  tcp_sk(sk)->rcv_nxt);
