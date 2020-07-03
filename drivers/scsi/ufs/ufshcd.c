@@ -8958,7 +8958,6 @@ static int ufshcd_setup_clocks(struct ufs_hba *hba, bool on,
 	if (!on)
 		ret = ufshcd_vops_set_bus_vote(hba, on);
 
-<<<<<<< HEAD
 out:
 	if (ret) {
 		if (on)
@@ -8976,21 +8975,6 @@ out:
 		spin_unlock_irqrestore(hba->host->host_lock, flags);
 		/* restore the secure configuration as clocks are enabled */
 		ufshcd_vops_update_sec_cfg(hba, true);
-=======
-	/*
-	 * "set_load" operation shall be required on those regulators
-	 * which specifically configured current limitation. Otherwise
-	 * zero max_uA may cause unexpected behavior when regulator is
-	 * enabled or set as high power mode.
-	 */
-	if (!vreg->max_uA)
-		return 0;
-
-	ret = regulator_set_load(vreg->reg, ua);
-	if (ret < 0) {
-		dev_err(dev, "%s: %s set load (ua=%d) failed, err=%d\n",
-				__func__, vreg->name, ua, ret);
->>>>>>> 75246f5711d9c... scsi: ufs: Fix regulator load and icc-level configuration
 	}
 
 	if (clk_state_changed)
