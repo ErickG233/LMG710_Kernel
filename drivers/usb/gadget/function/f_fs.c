@@ -1326,7 +1326,6 @@ static int ffs_aio_cancel(struct kiocb *kiocb)
 
 	ENTER();
 
-<<<<<<< HEAD
 	ffs_log("enter:state %d setup_state %d flag %lu", epfile->ffs->state,
 		epfile->ffs->setup_state, epfile->ffs->flags);
 
