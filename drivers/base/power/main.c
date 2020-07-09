@@ -791,6 +791,11 @@ void dpm_resume_early(pm_message_t state)
 #if defined(CONFIG_MACH_LGE)
 		ktime_t stime, etime;
 #endif
+
+#ifdef CONFIG_BOEFFLA_WL_BLOCKER
+	pm_print_active_wakeup_sources();
+#endif
+
 		dev = to_device(dpm_late_early_list.next);
 		get_device(dev);
 		list_move_tail(&dev->power.entry, &dpm_suspended_list);
