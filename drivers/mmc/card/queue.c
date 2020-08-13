@@ -137,7 +137,14 @@ static int mmc_cmdq_thread(void *d)
 		if (kthread_should_stop())
 			break;
 
+		ret = mmc_cmdq_down_rwsem(host, mq->cmdq_req_peeked);
+		if (ret) {
+			mmc_cmdq_up_rwsem(host);
+			continue;
+		}
 		ret = mq->cmdq_issue_fn(mq, mq->cmdq_req_peeked);
+		mmc_cmdq_up_rwsem(host);
+
 		/*
 		 * Don't requeue if issue_fn fails.
 		 * Recovery will be come by completion softirq
@@ -546,6 +553,13 @@ void mmc_cleanup_queue(struct mmc_queue *mq)
 	/* Then terminate our worker thread */
 	kthread_stop(mq->thread);
 
+#ifdef CONFIG_LGE_BDI_STRICTLIMIT_DIRTY
+	if (mq->card && mmc_card_sd(mq->card)) {
+		bdi_set_min_ratio(mq->queue->backing_dev_info, 0);
+		bdi_set_max_ratio(mq->queue->backing_dev_info, 100);
+	}
+#endif
+
 	/* Empty the queue */
 	spin_lock_irqsave(q->queue_lock, flags);
 	q->queuedata = NULL;
@@ -656,6 +670,7 @@ int mmc_cmdq_init(struct mmc_queue *mq, struct mmc_card *card)
 
 	init_waitqueue_head(&card->host->cmdq_ctx.queue_empty_wq);
 	init_waitqueue_head(&card->host->cmdq_ctx.wait);
+	init_rwsem(&card->host->cmdq_ctx.err_rwsem);
 
 	mq->mqrq_cmdq = kzalloc(
 			sizeof(struct mmc_queue_req) * q_depth, GFP_KERNEL);

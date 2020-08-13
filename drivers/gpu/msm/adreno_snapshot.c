@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2019 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -957,24 +957,6 @@ void adreno_snapshot(struct kgsl_device *device, struct kgsl_snapshot *snapshot,
 		KGSL_CORE_ERR("GPU snapshot froze %zdKb of GPU buffers\n",
 			snapshot_frozen_objsize / 1024);
 
-}
-
-/* adreno_snapshot_gmu - Snapshot the Adreno GMU state
- * @device - KGSL device to snapshot
- * @snapshot - Pointer to the snapshot instance
- * This is a hook function called by kgsl_snapshot to snapshot the
- * Adreno specific information for the GMU snapshot.  In turn, this function
- * calls the GMU specific snapshot function to get core specific information.
- */
-void adreno_snapshot_gmu(struct kgsl_device *device,
-		struct kgsl_snapshot *snapshot)
-{
-	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
-	struct adreno_gpudev *gpudev = ADRENO_GPU_DEVICE(adreno_dev);
-
-	/* Add GMU specific sections */
-	if (gpudev->snapshot_gmu)
-		gpudev->snapshot_gmu(adreno_dev, snapshot);
 }
 
 /*

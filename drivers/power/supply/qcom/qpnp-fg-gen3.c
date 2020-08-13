@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -187,6 +187,13 @@ static struct fg_irq_info fg_irqs[FG_IRQ_MAX];
 static int calculate_rescaled_soc(struct fg_chip *chip);
 static int extension_fg_load_dt(void);
 static int extension_fg_load_icoeff_dt(struct fg_chip *chip);
+static int extension_fg_gen3_set_ki_coeff(struct fg_chip *chip);
+static int extension_fg_gen3_suspend(struct fg_chip *chip);
+static int extension_fg_gen3_resume(struct fg_chip *chip);
+static int override_fg_adjust_ki_coeff_dischg(struct fg_chip *chip, int ki_low, int ki_med, int ki_high);
+#define KI_COEFF_LOW_DISCHG_DEFAULT	800
+#define KI_COEFF_MED_DISCHG_DEFAULT	1500
+#define KI_COEFF_HI_DISCHG_DEFAULT	2200
 #endif
 
 #define PARAM(_id, _addr_word, _addr_byte, _len, _num, _den, _offset,	\
@@ -974,6 +981,11 @@ static int fg_get_prop_capacity(struct fg_chip *chip, int *val)
 	else
 		*val = msoc;
 	return 0;
+}
+
+static int fg_get_prop_real_capacity(struct fg_chip *chip, int *val)
+{
+	return fg_get_msoc(chip, val);
 }
 
 #define DEFAULT_BATT_TYPE	"Unknown Battery"
@@ -2343,8 +2355,13 @@ static int fg_slope_limit_config(struct fg_chip *chip, int batt_temp)
 	}
 
 	chip->slope_limit_sts = status;
+#ifdef CONFIG_LGE_PM
+	fg_dbg(chip, FG_LGE, "Slope limit status: %d value: %x\n", status,
+		buf);
+#else
 	fg_dbg(chip, FG_STATUS, "Slope limit status: %d value: %x\n", status,
 		buf);
+#endif
 	return 0;
 }
 
@@ -2910,7 +2927,25 @@ out:
 	mutex_unlock(&chip->cyc_ctr.lock);
 }
 
-static const char *fg_get_cycle_count(struct fg_chip *chip)
+static int fg_get_cycle_count(struct fg_chip *chip)
+{
+	int i, len = 0;
+
+	if (!chip->cyc_ctr.en)
+		return 0;
+
+	mutex_lock(&chip->cyc_ctr.lock);
+	for (i = 0; i < BUCKET_COUNT; i++)
+		len += chip->cyc_ctr.count[i];
+
+	mutex_unlock(&chip->cyc_ctr.lock);
+
+	len = len / BUCKET_COUNT;
+
+	return len;
+}
+
+static const char *fg_get_cycle_counts(struct fg_chip *chip)
 {
 	int i, len = 0;
 	char *buf;
@@ -3138,8 +3173,13 @@ static void status_change_work(struct work_struct *work)
 
 #ifdef CONFIG_LGE_PM
 {
-	int override_fg_adjust_ki_coeff_dischg(struct fg_chip *chip);
-	rc = override_fg_adjust_ki_coeff_dischg(chip);
+	if (chip->dt.dynamic_ki_en)
+		rc = extension_fg_gen3_set_ki_coeff(chip);
+	else
+		rc = override_fg_adjust_ki_coeff_dischg(chip,
+				KI_COEFF_LOW_DISCHG_DEFAULT,
+				KI_COEFF_MED_DISCHG_DEFAULT,
+				KI_COEFF_HI_DISCHG_DEFAULT);
 	if (rc < 0)
 		pr_err("Error in adjusting ki_coeff_dischg, rc=%d\n", rc);
 }
@@ -4271,8 +4311,11 @@ static int fg_psy_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN:
 		pval->intval = chip->bp.float_volt_uv;
 		break;
+	case POWER_SUPPLY_PROP_CYCLE_COUNT:
+		pval->intval = fg_get_cycle_count(chip);
+		break;
 	case POWER_SUPPLY_PROP_CYCLE_COUNTS:
-		pval->strval = fg_get_cycle_count(chip);
+		pval->strval = fg_get_cycle_counts(chip);
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_NOW_RAW:
 		rc = fg_get_charge_raw(chip, &pval->intval);
@@ -4317,6 +4360,9 @@ static int fg_psy_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CC_STEP_SEL:
 		pval->intval = chip->ttf.cc_step.sel;
+		break;
+	case POWER_SUPPLY_PROP_REAL_CAPACITY:
+		rc = fg_get_prop_real_capacity(chip, &pval->intval);
 		break;
 	default:
 		pr_err("unsupported property %d\n", psp);
@@ -4507,6 +4553,7 @@ static enum power_supply_property fg_psy_props[] = {
 	POWER_SUPPLY_PROP_BATTERY_TYPE,
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
 	POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN,
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
 	POWER_SUPPLY_PROP_CYCLE_COUNTS,
 	POWER_SUPPLY_PROP_CHARGE_NOW_RAW,
 	POWER_SUPPLY_PROP_CHARGE_NOW,
@@ -4520,6 +4567,7 @@ static enum power_supply_property fg_psy_props[] = {
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
 	POWER_SUPPLY_PROP_CC_STEP,
 	POWER_SUPPLY_PROP_CC_STEP_SEL,
+	POWER_SUPPLY_PROP_REAL_CAPACITY,
 };
 
 static const struct power_supply_desc fg_psy_desc = {
@@ -4537,6 +4585,7 @@ static const struct power_supply_desc fg_psy_desc = {
 
 #define DEFAULT_ESR_CHG_TIMER_RETRY	8
 #define DEFAULT_ESR_CHG_TIMER_MAX	16
+#define VOLTAGE_MODE_SAT_CLEAR_BIT	BIT(3)
 static int fg_hw_init(struct fg_chip *chip)
 {
 	int rc;
@@ -4764,6 +4813,14 @@ static int fg_hw_init(struct fg_chip *chip)
 		pr_err("Error in writing batt_temp_delta, rc=%d\n", rc);
 		return rc;
 	}
+
+	rc = fg_sram_masked_write(chip, ESR_EXTRACTION_ENABLE_WORD,
+				ESR_EXTRACTION_ENABLE_OFFSET,
+				VOLTAGE_MODE_SAT_CLEAR_BIT,
+				VOLTAGE_MODE_SAT_CLEAR_BIT,
+				FG_IMA_DEFAULT);
+	if (rc < 0)
+		return rc;
 
 	fg_encode(chip->sp, FG_SRAM_ESR_TIGHT_FILTER,
 		chip->dt.esr_tight_flt_upct, buf);
@@ -5075,8 +5132,14 @@ static irqreturn_t fg_delta_msoc_irq_handler(int irq, void *data)
 
 #ifdef CONFIG_LGE_PM
 {
-	int override_fg_adjust_ki_coeff_dischg(struct fg_chip *chip);
-	rc = override_fg_adjust_ki_coeff_dischg(chip);
+	if (chip->dt.dynamic_ki_en)
+		rc = extension_fg_gen3_set_ki_coeff(chip);
+	else
+		rc = override_fg_adjust_ki_coeff_dischg(chip,
+				KI_COEFF_LOW_DISCHG_DEFAULT,
+				KI_COEFF_MED_DISCHG_DEFAULT,
+				KI_COEFF_HI_DISCHG_DEFAULT);
+
 	if (rc < 0)
 		pr_err("Error in adjusting ki_coeff_dischg, rc=%d\n", rc);
 }
@@ -5324,6 +5387,12 @@ static int fg_parse_slope_limit_coefficients(struct fg_chip *chip)
 			return -EINVAL;
 		}
 	}
+	pr_info("slope-limit-thr=%ddegC, coeffs=<%d %d %d %d>\n",
+			chip->dt.slope_limit_temp,
+			chip->dt.slope_limit_coeffs[LOW_TEMP_DISCHARGE],
+			chip->dt.slope_limit_coeffs[LOW_TEMP_CHARGE],
+			chip->dt.slope_limit_coeffs[HIGH_TEMP_DISCHARGE],
+			chip->dt.slope_limit_coeffs[HIGH_TEMP_CHARGE]);
 
 	chip->slope_limit_en = true;
 	return 0;
@@ -5383,9 +5452,9 @@ static int fg_parse_ki_coefficients(struct fg_chip *chip)
 			return -EINVAL;
 		}
 
-		if (chip->dt.ki_coeff_hi_dischg[i] < 0 ||
-			chip->dt.ki_coeff_hi_dischg[i] > KI_COEFF_MAX) {
-			pr_err("Error in ki_coeff_hi_dischg values\n");
+		if (chip->dt.ki_coeff_med_dischg[i] < 0 ||
+			chip->dt.ki_coeff_med_dischg[i] > KI_COEFF_MAX) {
+			pr_err("Error in ki_coeff_med_dischg values\n");
 			return -EINVAL;
 		}
 
@@ -5395,6 +5464,11 @@ static int fg_parse_ki_coefficients(struct fg_chip *chip)
 			return -EINVAL;
 		}
 	}
+	pr_info("soc[%d], high:%d med%d, low%d\n",
+			chip->dt.ki_coeff_soc[i],
+			chip->dt.ki_coeff_hi_dischg[i],
+			chip->dt.ki_coeff_med_dischg[i],
+			chip->dt.ki_coeff_low_dischg[i]);
 	chip->ki_coeff_dischg_en = true;
 
 	return 0;
@@ -5883,6 +5957,7 @@ static int fg_parse_dt(struct fg_chip *chip)
 
 	chip->dt.disable_esr_pull_dn = of_property_read_bool(node,
 					"qcom,fg-disable-esr-pull-dn");
+
 	chip->dt.disable_fg_twm = of_property_read_bool(node,
 					"qcom,fg-disable-in-twm");
 
@@ -6226,6 +6301,7 @@ static int fg_gen3_suspend(struct device *dev)
 	cancel_delayed_work_sync(&chip->ttf_work);
 	if (fg_sram_dump)
 		cancel_delayed_work_sync(&chip->sram_dump_work);
+	extension_fg_gen3_suspend(chip);
 	return 0;
 }
 
@@ -6251,6 +6327,7 @@ static int fg_gen3_resume(struct device *dev)
 	spin_lock(&chip->suspend_lock);
 	chip->suspended = false;
 	spin_unlock(&chip->suspend_lock);
+	extension_fg_gen3_resume(chip);
 
 	return 0;
 }
@@ -6275,7 +6352,6 @@ static void fg_gen3_shutdown(struct platform_device *pdev)
 	struct fg_chip *chip = dev_get_drvdata(&pdev->dev);
 	int rc, bsoc;
 	u8 mask;
-
 #ifdef CONFIG_LGE_PM
 	u8 buf[4] = {0, 0, 0, 0};
 

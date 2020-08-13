@@ -197,7 +197,7 @@ bool is_qnovo_en(struct fg_chip *chip)
 			POWER_SUPPLY_PROP_CHARGE_QNOVO_ENABLE, &pval);
 	if (rc < 0)
 		return false;
-#ifdef CONFIG_LGE_PM
+#ifdef CONFIG_QPNP_QNOVO
 	return true;
 #else
 	return pval.intval != 0;

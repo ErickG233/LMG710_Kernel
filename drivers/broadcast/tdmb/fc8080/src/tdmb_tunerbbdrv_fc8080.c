@@ -385,7 +385,7 @@ int tunerbb_drv_fc8080_msc_cb(uint32 userdata, uint8 subChId, uint8 *data, int l
 ---------------------------------------------------------------------------- */
 int tunerbb_drv_fc8080_msc_cb(uint32 userdata, uint8 subChId, uint8 *data, int length)
 {
-    TDMB_BB_HEADER_TYPE dmb_header;
+    TDMB_BB_HEADER_TYPE dmb_header = {0, };
     uint16 head_size = 0;
 
     switch(fc8080_serviceType[0])
@@ -1521,7 +1521,7 @@ int8    tunerbb_drv_fc8080_get_multi_data(uint8 subch_cnt, uint8* buf_ptr, uint3
 {
     uint32 nDataSize;
     int i=0;
-    TDMB_BB_HEADER_TYPE dmb_header;
+    TDMB_BB_HEADER_TYPE dmb_header = {0, };
     uint32 read_size = 0;
     FCI_HEADER_TYPE header;
     uint8 ch_cnt=0;
@@ -1649,7 +1649,7 @@ void tunerbb_drv_fc8080_get_dm(fci_u32 *mscber, fci_u32 *tp_err, fci_u16 *tpcnt,
         fci_u32 ber_err_bits;
     };
 
-    struct dm_st dm;
+    struct dm_st dm = {0, };
 
     bbm_com_bulk_read(NULL, BBM_DM, (fci_u8*) &dm, sizeof(dm));
 

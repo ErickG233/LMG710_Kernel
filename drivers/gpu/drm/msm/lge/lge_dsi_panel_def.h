@@ -38,8 +38,11 @@ enum lge_ddic_dsi_cmd_set_type {
 	LGE_DDIC_DSI_SET_SATURATION_DEFAULT,
 	LGE_DDIC_DSI_SET_HUE_DEFAULT,
 	LGE_DDIC_DSI_SET_SHARPNESS_DEFAULT,
+	LGE_DDIC_DSI_CM_CINEMA,
 	LGE_DDIC_DSI_CM_SPORTS,
 	LGE_DDIC_DSI_CM_GAME,
+	LGE_DDIC_DSI_CM_PHOTO,
+	LGE_DDIC_DSI_CM_WEB,
 	LGE_DDIC_DSI_DETECT_VERT_LINE_RESTORE,
 	LGE_DDIC_DSI_DETECT_BLACK_VERT_LINE,
 	LGE_DDIC_DSI_DETECT_WHITE_VERT_LINE,
@@ -54,11 +57,36 @@ enum lge_ddic_dsi_cmd_set_type {
 	LGE_DDIC_DSI_REGISTER_UNLOCK,
 	LGE_DDIC_DSI_VIDEO_ENHANCEMENT_ON,
 	LGE_DDIC_DSI_VIDEO_ENHANCEMENT_OFF,
+	LGE_DDIC_DSI_SET_BRIGHTER_MODE_ON,
+	LGE_DDIC_DSI_SET_BRIGHTER_MODE_OFF,
 	LGE_DDIC_DSI_HDR_SET_CTRL,
 	LGE_DDIC_DSI_IRC_CTRL,
 	LGE_DDIC_DSI_ACE_TUNE,
 	LGE_DDIC_DSI_ACE_RESTORE,
+	LGE_DDIC_DSI_DIGITAL_GAMMA_SET,
 	LGE_DDIC_DSI_AOD_AREA,
+	LGE_DDIC_DSI_DISP_CM_COMMAND_DUMMY,
+	LGE_DDIC_DSI_HIGH_TEMP_TUNE0,
+	LGE_DDIC_DSI_HIGH_TEMP_TUNE1,
+	LGE_DDIC_DSI_HIGH_TEMP_TUNE2,
+	LGE_DDIC_DSI_HIGH_TEMP_TUNE3,
+	LGE_DDIC_DSI_HIGH_TEMP_TUNE4,
+	LGE_DDIC_DSI_DISP_CM_SET,
+	LGE_DDIC_DSI_DISP_RGB_HUE_LUT,
+	LGE_DDIC_DSI_DISP_SAT_LUT,
+	LGE_DDIC_DSI_DISP_SHA_LUT,
+	LGE_DDIC_DSI_DISP_TRUEVIEW_LUT,
+	LGE_DDIC_DSI_BRIGHTNESS_CTRL_EXT_COMMAND,
+	LGE_DDIC_DSI_TC_PERF_ON_COMMAND,
+	LGE_DDIC_DSI_TC_PERF_OFF_COMMAND,
+	LGE_DDIC_DSI_RGB_LUT,
+	LGE_DDIC_DSI_ACE_LUT,
+	LGE_DDIC_DSI_FP_LHBM_READY,
+	LGE_DDIC_DSI_FP_LHBM_EXIT,
+	LGE_DDIC_DSI_FP_LHBM_ON,
+	LGE_DDIC_DSI_FP_LHBM_OFF,
+	LGE_DDIC_DSI_FP_LHBM_AOD_TO_FPS,
+	LGE_DDIC_DSI_FP_LHBM_FPS_TO_AOD,
 	LGE_DDIC_DSI_CMD_SET_MAX
 };
 
@@ -98,7 +126,7 @@ struct lge_rect {
 
 struct backup_info {
 	char owner[32];
-	enum dsi_cmd_set_type type;
+	enum lge_ddic_dsi_cmd_set_type type;
 	char name[32];
 	u8 reg;
 	int nth_cmds; /* #N command, if duplicated */
@@ -129,6 +157,7 @@ struct lge_ddic_ops {
 	int (*lge_set_therm_dim)(struct dsi_panel *panel, int input);
 	int (*lge_get_brightness_dim)(struct dsi_panel *panel);
 	void (*lge_set_brightness_dim)(struct dsi_panel *panel, int input);
+	void (*lge_set_brighter)(struct dsi_panel *panel, int input);
 	void (*lge_set_custom_rgb)(struct dsi_panel *panel, bool send_cmd);
 	void (*lge_set_rgb_tune)(struct dsi_panel *panel, bool send_cmd);
 	void (*lge_set_screen_tune)(struct dsi_panel *panel);
@@ -146,6 +175,7 @@ struct lge_ddic_ops {
 	int (*release_bist)(struct dsi_panel *panel);
 	int (*hdr_mode_set)(struct dsi_panel *panel, int input);
 	void (*sharpness_set)(struct dsi_panel *panel, int mode);
+	void (*lge_set_true_view_mode)(struct dsi_panel *panel, bool send_cmd);
 
 	/*For MPLUS */
 	/* Hidden Menu Mplus Set */
@@ -185,6 +215,10 @@ struct lge_ddic_ops {
 	int (*set_irc_state)(struct dsi_panel *panel, enum lge_irc_mode mode, enum lge_irc_ctrl enable);
 	int (*get_irc_state)(struct dsi_panel *panel);
 	int (*set_irc_default_state)(struct dsi_panel *panel);
+	void (*set_dim_ctrl)(struct dsi_panel *panel, bool status);
+
+	/*high_temp_tune*/
+	void (*high_temp_mode_set)(struct dsi_panel *panel, int mode);
 };
 
 struct lge_dsi_color_manager_mode_entry {
@@ -210,6 +244,7 @@ struct lge_dsi_panel {
 
 	struct lge_blmap *blmap_list;
 	int blmap_list_size;
+	int default_brightness;
 	bool dcs_brightness_be;
 	bool use_bist;
 	bool update_pps_in_lp;
@@ -278,7 +313,9 @@ struct lge_dsi_panel {
 	int sharpness;
 	int video_enhancement;
 	int hdr_hbm_lut;
-	int ve_mode;
+	int ddic_hdr;
+	int ve_hdr;
+	int ace_hdr;
 	int hbm_mode;
 	int acl_mode;
 	bool is_cm_reg_backup;
@@ -288,6 +325,20 @@ struct lge_dsi_panel {
 	bool use_bc_dimming_work;
 	int vr_low_persist_enable;
 	int vr_status;
+	bool use_dim_ctrl;
+	bool use_fp_lhbm;
+	bool need_fp_lhbm_set;
+	int fp_lhbm_mode;
+	int old_fp_lhbm_mode;
+	int fp_lhbm_br_lvl;
+	int old_panel_fp_mode;
+	int forced_lhbm;
+	bool use_tc_perf;
+	int tc_perf;
+	bool lhbm_ready_enable;
+
+	bool true_view_supported;
+	u32 true_view_mode;
 
 	bool use_irc_ctrl;
 	bool irc_pending;
@@ -295,6 +346,10 @@ struct lge_dsi_panel {
 	int irc_current_state;
 	bool use_ace_ctrl;
 	int ace_mode;
+
+	/*high_temp_tune*/
+	bool use_high_temp_tune;
+	int high_temp_tune_mode;
 
 	atomic_t backup_state;
 	struct work_struct backup_work;
@@ -320,8 +375,10 @@ struct lge_dsi_panel {
 	bool partial_area_horizontal_changed;
 	bool partial_area_height_changed;
 	bool aod_power_mode;
+	bool use_br_ctrl_ext;
 
 	u32 aod_interface;
+	const char *aod_interface_type[3];
 
 	/* For DISPLAY_ERR_DETECT */
 	bool use_panel_err_detect;

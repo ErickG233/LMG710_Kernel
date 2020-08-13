@@ -131,9 +131,9 @@
  * used less frequently than the refaulting page - or even not used at
  * all anymore.
  *
- * That means, if inactive cache is refaulting with a suitable refault
+ * That means if inactive cache is refaulting with a suitable refault
  * distance, we assume the cache workingset is transitioning and put
- * pressure on the existing cache pages on the active list.
+ * pressure on the current active list.
  *
  * If this is wrong and demotion kicks in, the pages which are truly
  * used more frequently will be reactivated while the less frequently
@@ -141,6 +141,14 @@
  *
  * But if this is right, the stale pages will be pushed out of memory
  * and the used pages get to stay in cache.
+ *
+ *		Refaulting active pages
+ *
+ * If on the other hand the refaulting pages have recently been
+ * deactivated, it means that the active list is no longer protecting
+ * actively used cache from reclaim. The cache is NOT transitioning to
+ * a different workingset; the existing workingset is thrashing in the
+ * space allocated to the page cache.
  *
  *
  *		Refaulting active pages
@@ -195,9 +203,8 @@
  * for ultra-fast IO devices or secondary memory types.
  */
 
-#define EVICTION_SHIFT (RADIX_TREE_EXCEPTIONAL_ENTRY +		\
-			 1 + ZONES_SHIFT + NODES_SHIFT +	\
-			 MEM_CGROUP_ID_SHIFT)
+#define EVICTION_SHIFT	(RADIX_TREE_EXCEPTIONAL_ENTRY + \
+			 1 + NODES_SHIFT + MEM_CGROUP_ID_SHIFT)
 #define EVICTION_MASK	(~0UL >> EVICTION_SHIFT)
 
 /*
@@ -211,7 +218,7 @@
 static unsigned int bucket_order __read_mostly;
 
 static void *pack_shadow(int memcgid, pg_data_t *pgdat, unsigned long eviction,
-			bool workingset)
+			 bool workingset)
 {
 	eviction >>= bucket_order;
 	eviction = (eviction << MEM_CGROUP_ID_SHIFT) | memcgid;
@@ -253,8 +260,8 @@ static void unpack_shadow(void *shadow, int *memcgidp, pg_data_t **pgdat,
  */
 void *workingset_eviction(struct address_space *mapping, struct page *page)
 {
-	struct mem_cgroup *memcg = page_memcg(page);
 	struct pglist_data *pgdat = page_pgdat(page);
+	struct mem_cgroup *memcg = page_memcg(page);
 	int memcgid = mem_cgroup_id(memcg);
 	unsigned long eviction;
 	struct lruvec *lruvec;
@@ -280,13 +287,13 @@ void *workingset_eviction(struct address_space *mapping, struct page *page)
 void workingset_refault(struct page *page, void *shadow)
 {
 	unsigned long refault_distance;
+	struct pglist_data *pgdat;
 	unsigned long active_file;
 	struct mem_cgroup *memcg;
 	unsigned long eviction;
 	struct lruvec *lruvec;
 	unsigned long refault;
 	unsigned long anon;
-	struct pglist_data *pgdat;
 	bool workingset;
 	int memcgid;
 
@@ -321,8 +328,9 @@ void workingset_refault(struct page *page, void *shadow)
 	else
 		anon = 0;
 
+
 	/*
-	 * Calculate the refault distance.
+	 * Calculate the refault distance
 	 *
 	 * The unsigned subtraction here gives an accurate distance
 	 * across inactive_age overflows in most cases. There is a
@@ -330,41 +338,33 @@ void workingset_refault(struct page *page, void *shadow)
 	 * and are either refaulted or reclaimed along with the inode
 	 * before they get too old.  But it is not impossible for the
 	 * inactive_age to lap a shadow entry in the field, which can
-	 * then can result in a false small refault distance, leading
-	 * to a false activation should this old entry actually
-	 * refault again.  However, earlier kernels used to deactivate
+	 * then result in a false small refault distance, leading to a
+	 * false activation should this old entry actually refault
+	 * again.  However, earlier kernels used to deactivate
 	 * unconditionally with *every* reclaim invocation for the
 	 * longest time, so the occasional inappropriate activation
 	 * leading to pressure on the active list is not a problem.
 	 */
 	refault_distance = (refault - eviction) & EVICTION_MASK;
 
+	inc_node_state(pgdat, WORKINGSET_REFAULT);
+
 	/*
-	 * Compare the distance with the existing workingset. We don't
-	 * act on pages that couldn't stay resident even with all the
-	 * memory available to the page cache.
+	 * Compare the distance to the existing workingset size. We
+	 * don't act on pages that couldn't stay resident even if all
+	 * the memory was available to the page cache.
 	 */
 	if (refault_distance > active_file + anon)
 		goto out;
 
-	/*
-	 * If inactive cache is refaulting, activate the page to
-	 * challenge the current cache workingset. The existing cache
-	 * might be stale, or at least colder than the contender.
-	 *
-	 * If active cache is refaulting (PageWorkingset set at time
-	 * of eviction), it means that the page cache as a whole is
-	 * thrashing. Restore PageWorkingset to inform the LRU code
-	 * about the additional cost of reclaiming more page cache.
-	 */
 	SetPageActive(page);
 	atomic_long_inc(&lruvec->inactive_age);
+	inc_node_state(pgdat, WORKINGSET_ACTIVATE);
 
+	/* Page was active prior to eviction */
 	if (workingset) {
 		SetPageWorkingset(page);
-		inc_node_state(pgdat, REFAULT_ACTIVE_FILE);
-	} else {
-		inc_node_state(pgdat, REFAULT_INACTIVE_FILE);
+		inc_node_state(pgdat, WORKINGSET_RESTORE);
 	}
 out:
 	rcu_read_unlock();
@@ -505,7 +505,7 @@ static enum lru_status shadow_lru_isolate(struct list_head *item,
 		}
 	}
 	BUG_ON(workingset_node_shadows(node));
-	inc_node_state(page_pgdat(virt_to_page(node)), REFAULT_NODERECLAIM);
+	inc_node_state(page_pgdat(virt_to_page(node)), WORKINGSET_NODERECLAIM);
 	if (!__radix_tree_delete_node(&mapping->page_tree, node))
 		BUG();
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,8 +25,9 @@
 #include "cam_debug_util.h"
 #include "cam_packet_util.h"
 #include "cam_context_utils.h"
+#include "cam_common_util.h"
 
-static const char isp_dev_name[] = "isp";
+static const char isp_dev_name[] = "cam-isp";
 
 static int cam_isp_context_dump_active_request(void *data, unsigned long iova,
 	uint32_t buf_info);
@@ -394,11 +395,13 @@ static int __cam_isp_ctx_handle_buf_done_in_activated_state(
 				CAM_DBG(CAM_ISP, "Sync failed with rc = %d",
 					 rc);
 		} else if (!req_isp->bubble_report) {
-			CAM_DBG(CAM_ISP,
-				"Sync with failure: req %lld res 0x%x fd 0x%x",
-				req->request_id,
+			/* LGE_CHANGE, CST, change log level for fence error */
+			CAM_INFO(CAM_ISP,
+				"Sync failure: req %lld res %s(0x%x) sync_id %d with bubble %d",
+				req->request_id,__cam_isp_resource_handle_id_to_type(
+				req_isp->fence_map_out[i].resource_handle),
 				req_isp->fence_map_out[j].resource_handle,
-				req_isp->fence_map_out[j].sync_id);
+				req_isp->fence_map_out[j].sync_id, bubble_state);
 
 			rc = cam_sync_signal(req_isp->fence_map_out[j].sync_id,
 				CAM_SYNC_STATE_SIGNALED_ERROR);
@@ -447,6 +450,7 @@ static int __cam_isp_ctx_handle_buf_done_in_activated_state(
 		req_isp->bubble_detected = false;
 		list_del_init(&req->list);
 		list_add(&req->list, &ctx->pending_req_list);
+		atomic_set(&ctx_isp->process_bubble, 0);
 
 		CAM_DBG(CAM_REQ,
 			"Move active request %lld to pending list(cnt = %d) [bubble recovery]",
@@ -764,6 +768,7 @@ static int __cam_isp_ctx_epoch_in_applied(struct cam_isp_context *ctx_isp,
 		notify.req_id = req->request_id;
 		notify.error = CRM_KMD_ERR_BUBBLE;
 		ctx->ctx_crm_intf->notify_err(&notify);
+		atomic_set(&ctx_isp->process_bubble, 1);
 		CAM_DBG(CAM_ISP, "Notify CRM about Bubble frame %lld",
 			ctx_isp->frame_id);
 	} else {
@@ -1197,6 +1202,14 @@ static int __cam_isp_ctx_apply_req_in_activated_state(
 	 *
 	 */
 	ctx_isp = (struct cam_isp_context *) ctx->ctx_priv;
+	if (atomic_read(&ctx_isp->process_bubble)) {
+		CAM_ERR_RATE_LIMIT(CAM_ISP,
+			"Processing bubble cannot apply Request Id %llu",
+			apply->request_id);
+		rc = -EAGAIN;
+		goto end;
+	}
+
 	spin_lock_bh(&ctx->lock);
 	req = list_first_entry(&ctx->pending_req_list, struct cam_ctx_request,
 		list);
@@ -1218,7 +1231,7 @@ static int __cam_isp_ctx_apply_req_in_activated_state(
 		ctx_isp->substate_activated);
 	req_isp = (struct cam_isp_ctx_req *) req->req_priv;
 
-	if (ctx_isp->active_req_cnt >= 4 ) { /* LGE_CHANGE CN03462622 Fix 240fps frame drop. Change active_req_cnt from 2 to 4 because QC FIFO size is 4. 2018-05-17 sungmin.cho@lge.com */
+	if (ctx_isp->active_req_cnt >=  4) {
 		CAM_ERR_RATE_LIMIT(CAM_ISP,
 			"Reject apply request (id %lld) due to congestion(cnt = %d)",
 			req->request_id,
@@ -1398,20 +1411,25 @@ static int __cam_isp_ctx_flush_req_in_top_state(
 	struct cam_isp_stop_args          stop_isp;
 	struct cam_hw_stop_args           stop_args;
 	struct cam_isp_start_args         start_isp;
+	struct cam_hw_reset_args          reset_args;
 	int rc = 0;
 
-	CAM_DBG(CAM_ISP, "try to flush pending list");
+	CAM_DBG(CAM_ISP, "ctx id:%d try to flush pending list",
+		ctx->ctx_id);
 	spin_lock_bh(&ctx->lock);
 	rc = __cam_isp_ctx_flush_req(ctx, &ctx->pending_req_list, flush_req);
 	spin_unlock_bh(&ctx->lock);
 
+	atomic_set(&ctx_isp->process_bubble, 0);
 	if (flush_req->type == CAM_REQ_MGR_FLUSH_TYPE_ALL) {
 		/* if active and wait list are empty, return */
 		spin_lock_bh(&ctx->lock);
 		if ((list_empty(&ctx->wait_req_list)) &&
 			(list_empty(&ctx->active_req_list))) {
 			spin_unlock_bh(&ctx->lock);
-			CAM_DBG(CAM_ISP, "active and wait list are empty");
+			CAM_DBG(CAM_ISP,
+				"ctx id:%d active and wait list are empty",
+				ctx->ctx_id);
 			goto end;
 		}
 		spin_unlock_bh(&ctx->lock);
@@ -1423,12 +1441,21 @@ static int __cam_isp_ctx_flush_req_in_top_state(
 		stop_args.args = (void *)&stop_isp;
 		ctx->hw_mgr_intf->hw_stop(ctx->hw_mgr_intf->hw_mgr_priv,
 				&stop_args);
+		CAM_DBG(CAM_ISP, "try to reset hw");
+		/* Reset hw */
+		reset_args.ctxt_to_hw_map = ctx_isp->hw_ctx;
+		rc = ctx->hw_mgr_intf->hw_reset(ctx->hw_mgr_intf->hw_mgr_priv,
+			&reset_args);
+		if (rc)
+			goto end;
 
 		spin_lock_bh(&ctx->lock);
-		CAM_DBG(CAM_ISP, "try to flush wait list");
+		CAM_DBG(CAM_ISP, "ctx id:%d try to flush wait list",
+			ctx->ctx_id);
 		rc = __cam_isp_ctx_flush_req(ctx, &ctx->wait_req_list,
 		flush_req);
-		CAM_DBG(CAM_ISP, "try to flush active list");
+		CAM_DBG(CAM_ISP, "ctx id:%d try to flush active list",
+			ctx->ctx_id);
 		rc = __cam_isp_ctx_flush_req(ctx, &ctx->active_req_list,
 		flush_req);
 		ctx_isp->active_req_cnt = 0;
@@ -1444,8 +1471,9 @@ static int __cam_isp_ctx_flush_req_in_top_state(
 	}
 
 end:
-	CAM_DBG(CAM_ISP, "Flush request in top state %d",
-		 ctx->state);
+	ctx_isp->substate_activated = CAM_ISP_CTX_ACTIVATED_SOF;
+	CAM_DBG(CAM_ISP, "ctx id:%d Flush request in top state %d",
+		 ctx->ctx_id, ctx->state);
 	return rc;
 }
 
@@ -2031,9 +2059,10 @@ static int __cam_isp_ctx_config_dev_in_top_state(
 	int rc = 0, i;
 	struct cam_ctx_request           *req = NULL;
 	struct cam_isp_ctx_req           *req_isp;
-	uint64_t                          packet_addr;
+	uintptr_t                         packet_addr;
 	struct cam_packet                *packet;
 	size_t                            len = 0;
+	size_t                            remain_len = 0;
 	struct cam_hw_prepare_update_args cfg;
 	struct cam_req_mgr_add_request    add_req;
 	struct cam_isp_context           *ctx_isp =
@@ -2061,16 +2090,24 @@ static int __cam_isp_ctx_config_dev_in_top_state(
 	/* for config dev, only memory handle is supported */
 	/* map packet from the memhandle */
 	rc = cam_mem_get_cpu_buf((int32_t) cmd->packet_handle,
-		(uint64_t *) &packet_addr, &len);
+		&packet_addr, &len);
 	if (rc != 0) {
 		CAM_ERR(CAM_ISP, "Can not get packet address");
 		rc = -EINVAL;
 		goto free_req;
 	}
 
-	packet = (struct cam_packet *) (packet_addr + cmd->offset);
+	remain_len = len;
+	if ((len < sizeof(struct cam_packet)) ||
+		((size_t)cmd->offset >= len - sizeof(struct cam_packet))) {
+		CAM_ERR(CAM_ISP, "invalid buff length: %zu or offset", len);
+		return -EINVAL;
+	}
+
+	remain_len -= (size_t)cmd->offset;
+	packet = (struct cam_packet *)(packet_addr + (uint32_t)cmd->offset);
 	CAM_DBG(CAM_ISP, "pack_handle %llx", cmd->packet_handle);
-	CAM_DBG(CAM_ISP, "packet address is 0x%llx", packet_addr);
+	CAM_DBG(CAM_ISP, "packet address is 0x%zx", packet_addr);
 	CAM_DBG(CAM_ISP, "packet with length %zu, offset 0x%llx",
 		len, cmd->offset);
 	CAM_DBG(CAM_ISP, "Packet request id %lld",
@@ -2081,6 +2118,7 @@ static int __cam_isp_ctx_config_dev_in_top_state(
 	/* preprocess the configuration */
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.packet = packet;
+	cfg.remain_len = remain_len;
 	cfg.ctxt_to_hw_map = ctx_isp->hw_ctx;
 	cfg.max_hw_update_entries = CAM_ISP_CTX_CFG_MAX;
 	cfg.hw_update_entries = req_isp->cfg;
@@ -2226,7 +2264,7 @@ static int __cam_isp_ctx_acquire_dev_in_available(struct cam_context *ctx,
 	CAM_DBG(CAM_ISP, "start copy %d resources from user",
 		 cmd->num_resources);
 
-	if (copy_from_user(isp_res, (void __user *)cmd->resource_hdl,
+	if (copy_from_user(isp_res, u64_to_user_ptr(cmd->resource_hdl),
 		sizeof(*isp_res)*cmd->num_resources)) {
 		rc = -EFAULT;
 		goto free_res;
@@ -2235,7 +2273,7 @@ static int __cam_isp_ctx_acquire_dev_in_available(struct cam_context *ctx,
 	param.context_data = ctx;
 	param.event_cb = ctx->irq_cb_intf;
 	param.num_acq = cmd->num_resources;
-	param.acquire_info = (uint64_t) isp_res;
+	param.acquire_info = (uintptr_t) isp_res;
 
 	/* call HW manager to reserve the resource */
 	rc = ctx->hw_mgr_intf->hw_acquire(ctx->hw_mgr_intf->hw_mgr_priv,
@@ -2425,6 +2463,7 @@ static int __cam_isp_ctx_start_dev_in_ready(struct cam_context *ctx,
 	start_isp.hw_config.init_packet = 1;
 	start_isp.start_only = false;
 
+	atomic_set(&ctx_isp->process_bubble, 0);
 	ctx_isp->frame_id = 0;
 	ctx_isp->active_req_cnt = 0;
 	ctx_isp->reported_req_id = 0;
@@ -2560,6 +2599,7 @@ static int __cam_isp_ctx_stop_dev_in_activated_unlock(
 	ctx_isp->frame_id = 0;
 	ctx_isp->active_req_cnt = 0;
 	ctx_isp->reported_req_id = 0;
+	atomic_set(&ctx_isp->process_bubble, 0);
 
 	CAM_DBG(CAM_ISP, "Stop device success next state %d on ctx %u",
 		ctx->state, ctx->ctx_id);

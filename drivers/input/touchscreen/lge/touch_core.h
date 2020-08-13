@@ -33,6 +33,7 @@
 #include <linux/atomic.h>
 #include <linux/input.h>
 #include <linux/input/mt.h>
+#include <touch_common.h>
 #include <touch_hwif.h>
 #include <linux/input/lge_touch_notify.h>
 #include <linux/lge_panel_notify.h>
@@ -108,7 +109,17 @@ extern u32 touch_debug_mask;
 #define TOUCH_IRQ_SWIPE_RIGHT		(1 << 5)
 #define TOUCH_IRQ_SWIPE_LEFT		(1 << 6)
 #define TOUCH_IRQ_AI_BUTTON		(1 << 9)
+#define TOUCH_IRQ_AI_PICK		(1 << 10)
+#define TOUCH_IRQ_SWIPE_LEFT2		(1 << 12)
+#define TOUCH_IRQ_SWIPE_RIGHT2		(1 << 13)
 #define TOUCH_IRQ_ERROR			(1 << 15)
+#define TOUCH_IRQ_LPWG_LONGPRESS_DOWN		(1 << 16)
+#define TOUCH_IRQ_LPWG_LONGPRESS_UP		(1 << 17)
+#define TOUCH_IRQ_LPWG_SINGLE_WAKEUP		(1 << 18)
+#define TOUCH_IRQ_PEN_WAKEUP		(1 << 19)
+#define TOUCH_IRQ_PEN_WAKEUP_BTN	(1 << 20)
+#define TOUCH_IRQ_PEN_DETECTION		(1 << 21)
+
 
 enum {
 	POWER_OFF = 0,
@@ -315,6 +326,7 @@ enum {
 	TOUCH_UEVENT_SWIPE_RIGHT,
 	TOUCH_UEVENT_SWIPE_LEFT,
 	TOUCH_UEVENT_AI_BUTTON,
+	TOUCH_UEVENT_AI_PICK,
 	TOUCH_UEVENT_SIZE,
 };
 
@@ -337,6 +349,7 @@ struct state_info {
 	atomic_t lockscreen;
 	atomic_t ime;
 	atomic_t quick_cover;
+	atomic_t film;
 	atomic_t incoming_call;
 	atomic_t mfts;
 	atomic_t sp_link;
@@ -633,11 +646,9 @@ int touch_lpwg(struct touch_core_data *ts, u32 code, int *value);
 
 extern irqreturn_t touch_irq_handler(int irq, void *dev_id);
 extern irqreturn_t touch_irq_thread(int irq, void *dev_id);
-extern void touch_msleep(unsigned int msecs);
 extern int touch_get_dts(struct touch_core_data *ts);
 extern int touch_get_platform_data(struct touch_core_data *ts);
 extern int touch_init_sysfs(struct touch_core_data *ts);
-extern void touch_interrupt_control(struct device *dev, int on_off);
 extern void touch_report_all_event(struct touch_core_data *ts);
 extern void touch_suspend(struct device *dev);
 extern void touch_resume(struct device *dev);

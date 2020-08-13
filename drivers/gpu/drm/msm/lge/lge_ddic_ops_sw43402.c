@@ -365,7 +365,7 @@ static void lge_display_control_store_sw43402(struct dsi_panel *panel, bool send
 					(panel->lge.color_manager_mode & 0x03);
 
 	payload2[1] = ((panel->lge.hdr_hbm_lut << 6) & 0xC0) | \
-					((panel->lge.ve_mode << 4) & 0x30) | \
+					((panel->lge.ddic_hdr << 4) & 0x30) | \
 					((panel->lge.hbm_mode << 2) & 0x0C) | \
 					(panel->lge.acl_mode & 0x03);
 
@@ -467,7 +467,7 @@ static void lge_set_acl_mode_sw43402(struct dsi_panel *panel, int input)
 
 static void lge_set_video_enhancement_sw43402(struct dsi_panel *panel, int input)
 {
-	panel->lge.ve_mode = input & 0x03;
+	panel->lge.ddic_hdr = input & 0x03;
 	lge_display_control_store_sw43402(panel, true);
 
 	pr_info("send cmds to %s the video enhancer \n",

@@ -17,6 +17,12 @@ static int pr_debugmask;
 #define BVP_NOTREADY	INT_MAX
 #define BVP_VOTER	"BVP"
 
+enum multi_fv_type {
+	MFV_CC = 0,
+	MFV_CV,
+	MFV_MAX,
+};
+
 static void protection_batvolt_work(struct work_struct *work);
 
 static struct protection_batvolt_struct {
@@ -28,28 +34,81 @@ static struct protection_batvolt_struct {
 	int			threshold_vbat_limit;
 	int			threshold_vbat_clear;
 	int			threshold_ibat_rated;
+	int			threshold_cv_ibat_rated;
 	/* dt contents */
 	int			step_ibat_ma;
 	int			step_poll_ms;
+	/* multi - fv(float voltage) */
+	bool multi_fv_enabled;
+	int multi_fv_mvolt[MFV_MAX];
 } bvp_me = {
 	.bvp_get	= NULL,
 	.bvp_voter	= { .type = VOTER_TYPE_INVALID },
 	.bvp_dwork	= __DELAYED_WORK_INITIALIZER(bvp_me.bvp_dwork,
 		protection_batvolt_work, 0),
 
-	.threshold_vbat_limit	= BVP_NOTREADY,
-	.threshold_vbat_clear	= BVP_NOTREADY,
-	.threshold_ibat_rated	= BVP_NOTREADY,
+	.threshold_vbat_limit    = BVP_NOTREADY,
+	.threshold_vbat_clear    = BVP_NOTREADY,
+	.threshold_ibat_rated    = BVP_NOTREADY,
+	.threshold_cv_ibat_rated = BVP_NOTREADY,
 
 	.step_ibat_ma		= BVP_NOTREADY,
 	.step_poll_ms		= BVP_NOTREADY,
+
+	.multi_fv_enabled = false,
+	.multi_fv_mvolt = {4450, 4430},
 };
+
+static bool set_multi_fv(int mode)
+{
+	int batt_profile_fv = 0;
+	int charger = 0, mode_local = mode;
+	int rc = 0;
+
+	if (!bvp_me.multi_fv_enabled)
+		return false;
+
+	rc = get_veneer_param(
+			VENEER_FEED_CHARGER_TYPE, &charger);
+	if ((charger == CHARGING_SUPPLY_TYPE_UNKNOWN) ||
+		(charger == CHARGING_SUPPLY_TYPE_FLOAT)   ||
+		(charger == CHARGING_SUPPLY_TYPE_NONE)    ||
+		(charger == CHARGING_SUPPLY_USB_2P0)      ||
+		(charger == CHARGING_SUPPLY_USB_3PX)      ||
+		(charger == CHARGING_SUPPLY_FACTORY_56K)  ||
+		(charger == CHARGING_SUPPLY_FACTORY_130K) ||
+		(charger == CHARGING_SUPPLY_FACTORY_910K) ||
+		(charger == CHARGING_SUPPLY_WIRELESS_5W)  ||
+		(charger == CHARGING_SUPPLY_WIRELESS_9W)  ){
+        mode_local = MFV_CV;
+    }
+
+	rc = get_veneer_param(
+			VENEER_FEED_BATT_PROFILE_FV_VOTER, &batt_profile_fv);
+	if (!rc && batt_profile_fv > 0) {
+		if (batt_profile_fv != bvp_me.multi_fv_mvolt[mode_local]) {
+			rc = set_veneer_param(
+				VENEER_FEED_BATT_PROFILE_FV_VOTER,
+				bvp_me.multi_fv_mvolt[mode_local]);
+			pr_batvolt(UPDATE, "%s multi-fv=%dmV...\n",
+				(mode_local == MFV_CC) ? "initialize," : "enter CV mode,",
+				bvp_me.multi_fv_mvolt[mode_local]);
+		}
+	}
+
+	return !rc;
+}
 
 static void protection_batvolt_work(struct work_struct *work) {
 	// Filled from client
-	int vbat_now, icap_now;
+	int vbat_now = 0, icap_now = 0, ui_soc = 0;
 	// Set in this work
-	int icap_new;
+	int icap_new = 0, chg_now = POWER_SUPPLY_CHARGE_TYPE_UNKNOWN;
+
+	if (get_veneer_param(VENEER_FEED_CAPACITY, &ui_soc))
+		ui_soc = 0;
+	if (get_veneer_param(VENEER_FEED_CHARGE_TYPE, &chg_now))
+		chg_now = POWER_SUPPLY_CHARGE_TYPE_UNKNOWN;
 
 	if (bvp_me.bvp_get(&vbat_now, &icap_now)) {
 		if (vbat_now <= bvp_me.threshold_vbat_limit) {
@@ -63,9 +122,31 @@ static void protection_batvolt_work(struct work_struct *work) {
 			goto done;
 		}
 
-		if (icap_now <= bvp_me.threshold_ibat_rated) {
-			pr_batvolt(VERBOSE, "Under C-rate (%d)\n", icap_now);
-			goto done;
+		if (bvp_me.threshold_cv_ibat_rated > 0) {
+			/* for NEW SDM845 models of Style3, Cayman-SDM845 */
+			if (chg_now != POWER_SUPPLY_CHARGE_TYPE_TAPER
+				&& icap_now <= bvp_me.threshold_ibat_rated) {
+				pr_batvolt(VERBOSE, "Under C-rate (%d)\n", icap_now);
+				goto done;
+			}
+
+			if (chg_now == POWER_SUPPLY_CHARGE_TYPE_TAPER
+				&& icap_now <= bvp_me.threshold_cv_ibat_rated) {
+				if (bvp_me.multi_fv_enabled) {
+					set_multi_fv(MFV_CV);
+				}
+				else {
+					pr_batvolt(VERBOSE, "Under C-rate (%d) on CV\n", icap_now);
+				}
+				goto done;
+			}
+		}
+		else {
+			/* for OLD SDM845 models of G7, V35, V40 */
+			if (icap_now <= bvp_me.threshold_ibat_rated) {
+				pr_batvolt(VERBOSE, "Under C-rate (%d)\n", icap_now);
+				goto done;
+			}
 		}
 	}
 	else {
@@ -76,9 +157,16 @@ static void protection_batvolt_work(struct work_struct *work) {
 	icap_new = (icap_now - bvp_me.step_ibat_ma) / bvp_me.step_ibat_ma * bvp_me.step_ibat_ma;
 	veneer_voter_set(&bvp_me.bvp_voter, icap_new);
 
+	if (ui_soc >= 100)
+		set_multi_fv(MFV_CV);
+	else
+		set_multi_fv(MFV_CC);
+
 	pr_batvolt(UPDATE, "Condition : %dmv, %dma => Reduce IBAT to %d\n",
 		vbat_now, icap_now, icap_new);
 done:
+	if (ui_soc >= 100)
+		set_multi_fv(MFV_CV);
 	schedule_delayed_work(to_delayed_work(work), msecs_to_jiffies(bvp_me.step_poll_ms));
 	return;
 }
@@ -107,7 +195,7 @@ void protection_batvolt_refresh(bool is_charging) {
 
 bool protection_batvolt_create(struct device_node* dnode, int mincap,
 	bool (*feed_protection_batvolt)(int* vnow_mv, int* icap_ma)) {
-	int ret = 0, threshold_ibat_pct = 0;
+	int ret = 0, threshold_ibat_pct = 0, threshold_cv_ibat_pct = 0;
 	pr_debugmask = ERROR | UPDATE;
 
 	/* Parse device tree */
@@ -118,6 +206,14 @@ bool protection_batvolt_create(struct device_node* dnode, int mincap,
 	}
 	else
 		bvp_me.threshold_ibat_rated = mincap * threshold_ibat_pct / 100;
+
+	ret = of_property_read_s32(dnode, "lge,threshold-cv-ibat-pct", &threshold_cv_ibat_pct);
+	if (ret < 0) {
+		pr_batvolt(ERROR, "Failed to read 'lge,threshold-cv-ibat-pct' ret=%d\n", ret);
+		bvp_me.threshold_cv_ibat_rated = -9999;
+	}
+	else
+		bvp_me.threshold_cv_ibat_rated = mincap * threshold_cv_ibat_pct / 100;
 
 	ret = of_property_read_s32(dnode, "lge,threshold-vbat-limit", &bvp_me.threshold_vbat_limit);
 	if (ret < 0) {
@@ -138,6 +234,14 @@ bool protection_batvolt_create(struct device_node* dnode, int mincap,
 	if (ret < 0) {
 		pr_batvolt(ERROR, "Failed to read 'lge,step-poll-ms' ret=%d\n", ret);
 		goto destroy;
+	}
+
+	bvp_me.multi_fv_enabled = of_property_read_bool(dnode, "lge,mulit-fv-enable");
+	ret = of_property_read_u32_array(dnode,
+		"lge,multi-fv-mvolt", bvp_me.multi_fv_mvolt, MFV_MAX);
+	if (ret < 0) {
+		bvp_me.multi_fv_mvolt[0] = 4450;
+		bvp_me.multi_fv_mvolt[1] = 4430;
 	}
 
 	/* Fill callback */
@@ -175,6 +279,7 @@ void protection_batvolt_destroy(void) {
 	bvp_me.threshold_vbat_limit	= BVP_NOTREADY;
 	bvp_me.threshold_vbat_clear	= BVP_NOTREADY;
 	bvp_me.threshold_ibat_rated	= BVP_NOTREADY;
+	bvp_me.threshold_cv_ibat_rated	= BVP_NOTREADY;
 
 	bvp_me.step_ibat_ma		= BVP_NOTREADY;
 	bvp_me.step_poll_ms		= BVP_NOTREADY;

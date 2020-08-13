@@ -275,8 +275,9 @@ static const struct apsd_result *smblib_get_apsd_result(struct smb_charger *chg)
 	int rc, i;
 	u8 apsd_stat, stat;
 	const struct apsd_result *result = &smblib_apsd_results[UNKNOWN];
-
 #ifdef CONFIG_LGE_PM
+	bool is_hvdcp_disabled = false;
+
 	if (workaround_usb_compliance_mode_enabled()) {
 		union power_supply_propval vbus = { 0, };
 
@@ -323,6 +324,17 @@ static const struct apsd_result *smblib_get_apsd_result(struct smb_charger *chg)
 		if (result != &smblib_apsd_results[HVDCP3])
 			result = &smblib_apsd_results[HVDCP2];
 	}
+
+#ifdef CONFIG_LGE_PM
+	is_hvdcp_disabled = is_client_vote_enabled(
+		chg->hvdcp_disable_votable_indirect, "DEFAULT_VOTER");
+	if (is_hvdcp_disabled) {
+		if (result->pst == POWER_SUPPLY_TYPE_USB_HVDCP ||
+			result->pst == POWER_SUPPLY_TYPE_USB_HVDCP_3) {
+			result = &smblib_apsd_results[DCP];
+		}
+	}
+#endif
 
 	return result;
 }
@@ -555,7 +567,7 @@ static int smblib_request_dpdm(struct smb_charger *chg, bool enable)
 
 	if (enable) {
 #ifdef CONFIG_LGE_PM
-		if (is_client_vote_enabled(chg->usb_icl_votable, "MOISTURE_VOTER")) {
+		if (chg->moisture_ux && is_client_vote_enabled(chg->usb_icl_votable, "MOISTURE_VOTER")) {
 			smblib_dbg(chg, PR_MISC, "skip enable DPDM regulator on moisture\n");
 			return rc;
 		}
@@ -1657,7 +1669,7 @@ static int _smblib_vbus_regulator_enable(struct regulator_dev *rdev)
 
 	smblib_dbg(chg, PR_OTG, "enabling OTG\n");
 
-	if (chg->wa_flags & OTG_WA) {
+	if ((chg->wa_flags & OTG_WA) && (!chg->reddragon_ipc_wa)) {
 		rc = smblib_enable_otg_wa(chg);
 		if (rc < 0)
 			smblib_err(chg, "Couldn't enable OTG rc=%d\n", rc);
@@ -2859,6 +2871,10 @@ static int smblib_handle_usb_current(struct smb_charger *chg,
 			if (rc < 0)
 				return rc;
 		}
+	} else if (chg->real_charger_type == POWER_SUPPLY_TYPE_USB &&
+		usb_current == -ETIMEDOUT) {
+		rc = vote(chg->usb_icl_votable, USB_PSY_VOTER,
+					true, USBIN_100MA);
 	} else {
 		rc = vote(chg->usb_icl_votable, USB_PSY_VOTER,
 					true, usb_current);
@@ -2958,6 +2974,7 @@ static int __smblib_set_prop_pd_active(struct smb_charger *chg, bool pd_active)
 
 	chg->pd_active = pd_active;
 	if (chg->pd_active) {
+		chg->real_charger_type = POWER_SUPPLY_TYPE_USB_PD;
 		vote(chg->apsd_disable_votable, PD_VOTER, true, 0);
 		vote(chg->pd_allowed_votable, PD_VOTER, true, 0);
 		vote(chg->usb_irq_enable_votable, PD_VOTER, true, 0);
@@ -3016,7 +3033,7 @@ static int __smblib_set_prop_pd_active(struct smb_charger *chg, bool pd_active)
 
 		hvdcp = stat & QC_CHARGER_BIT;
 		vote(chg->apsd_disable_votable, PD_VOTER, false, 0);
-		vote(chg->pd_allowed_votable, PD_VOTER, true, 0);
+		vote(chg->pd_allowed_votable, PD_VOTER, false, 0);
 		vote(chg->usb_irq_enable_votable, PD_VOTER, false, 0);
 		vote(chg->hvdcp_disable_votable_indirect, PD_INACTIVE_VOTER,
 								false, 0);
@@ -3603,8 +3620,17 @@ void smblib_usb_plugin_hard_reset_locked(struct smb_charger *chg)
 	vbus_rising = (bool)(stat & USBIN_PLUGIN_RT_STS_BIT);
 
 	if (vbus_rising) {
+		/* Remove FCC_STEPPER 1.5A init vote to allow FCC ramp up */
+		if (chg->fcc_stepper_enable)
+			vote(chg->fcc_votable, FCC_STEPPER_VOTER, false, 0);
+
 		smblib_cc2_sink_removal_exit(chg);
 	} else {
+		/* Force 1500mA FCC on USB removal if fcc stepper is enabled */
+		if (chg->fcc_stepper_enable)
+			vote(chg->fcc_votable, FCC_STEPPER_VOTER,
+							true, 1500000);
+
 		smblib_cc2_sink_removal_enter(chg);
 		if (chg->wa_flags & BOOST_BACK_WA) {
 			data = chg->irq_info[SWITCH_POWER_OK_IRQ].irq_data;
@@ -3618,6 +3644,9 @@ void smblib_usb_plugin_hard_reset_locked(struct smb_charger *chg)
 						false, 0);
 			}
 		}
+#ifdef CONFIG_LGE_PM
+		workaround_fake_pd_hard_reset_trigger();
+#endif
 	}
 
 	power_supply_changed(chg->usb_psy);
@@ -3654,6 +3683,10 @@ void smblib_usb_plugin_locked(struct smb_charger *chg)
 		if (rc < 0)
 			smblib_err(chg, "Couldn't to enable DPDM rc=%d\n", rc);
 
+		/* Remove FCC_STEPPER 1.5A init vote to allow FCC ramp up */
+		if (chg->fcc_stepper_enable)
+			vote(chg->fcc_votable, FCC_STEPPER_VOTER, false, 0);
+
 		/* Schedule work to enable parallel charger */
 		vote(chg->awake_votable, PL_DELAY_VOTER, true, 0);
 		schedule_delayed_work(&chg->pl_enable_work,
@@ -3662,6 +3695,12 @@ void smblib_usb_plugin_locked(struct smb_charger *chg)
 		if (get_effective_result(chg->apsd_disable_votable) &&
 				!chg->pd_active)
 			pr_err("APSD disabled on vbus rising without PD\n");
+#ifdef CONFIG_LGE_USB_MOISTURE_DETECTION
+		if (!chg->moisture_ux &&
+				is_client_vote_enabled(chg->usb_icl_votable, "MOISTURE_VOTER")) {
+			vote(chg->hvdcp_hw_inov_dis_votable, "DISABLE_HVDCP_VOTER", true, 0);
+		}
+#endif
 	} else {
 		if (chg->fake_usb_insertion) {
 			chg->fake_usb_insertion = false;
@@ -3680,6 +3719,11 @@ void smblib_usb_plugin_locked(struct smb_charger *chg)
 						false, 0);
 			}
 		}
+
+		/* Force 1500mA FCC on removal if fcc stepper is enabled */
+		if (chg->fcc_stepper_enable)
+			vote(chg->fcc_votable, FCC_STEPPER_VOTER,
+							true, 1500000);
 
 		rc = smblib_request_dpdm(chg, false);
 		if (rc < 0)
@@ -5555,7 +5599,13 @@ int smblib_deinit(struct smb_charger *chg)
 /************************
  * OVERRIDDEN CALLBACKS *
  ************************/
-irqreturn_t override_handle_chg_state_change(int irq, void *data) {
+irqreturn_t override_handle_chg_state_change(int irq, void *data)
+{
+	const char str_charger_status[8][12] = {
+		"inhibit", "trickle", "precharge", "fullon",
+		"taper", "termination", "chg pause", "invalid"
+	};
+
 	struct smb_irq_data* irq_data = data;
 	struct smb_charger*  chg = irq_data->parent_data;
 	u8 stat;
@@ -5573,7 +5623,8 @@ irqreturn_t override_handle_chg_state_change(int irq, void *data) {
 			(int)(stat & BATTERY_CHARGER_STATUS_MASK));
 
 		stat &= BATTERY_CHARGER_STATUS_MASK;
-		smblib_dbg(chg, PR_INTERRUPT, "chg_state_change to 0x%X\n", stat);
+		smblib_dbg(chg, PR_INTERRUPT, "chg_state_change to 0x%X, %s\n",
+			stat, str_charger_status[stat&0x7]);
 
 		if (stat == TERMINATE_CHARGE) {
 			if (smblib_masked_write(chg, WD_CFG_REG,

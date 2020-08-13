@@ -12,6 +12,8 @@ extern struct lge_ddic_ops sw49409_ops;
 extern struct lge_ddic_ops sw49410_ops;
 extern struct lge_ddic_ops sw49410_rev1_ops;
 extern struct lge_ddic_ops rm69299_ops;
+extern struct lge_ddic_ops sw43410_ops;
+extern struct lge_ddic_ops sw43103_ops;
 
 struct lge_ddic_match {
 	char compatible[15];
@@ -26,12 +28,14 @@ static struct lge_ddic_match supported_ddic_list[] = {
 	{"sw49410", &sw49410_ops},
 	{"sw49410_rev1", &sw49410_rev1_ops},
 	{"rm69299", &rm69299_ops},
+	{"sw43410", &sw43410_ops},
+	{"sw43103", &sw43103_ops},
 };
 
 extern char* get_ddic_name(void);
 extern bool is_ddic_name(char *ddic_name);
 extern int lge_mdss_dsi_panel_cmds_backup(struct dsi_panel *panel, char *owner,
-				enum dsi_cmd_set_type type, u8 reg, int nth_cmds);
+				enum lge_ddic_dsi_cmd_set_type type, u8 reg, int nth_cmds);
 
 static struct backup_info* lge_ddic_panel_reg_backup_prepare(struct dsi_panel *panel, int *cnt)
 {
@@ -238,8 +242,8 @@ void lge_ddic_feature_init(struct dsi_panel *panel)
 		lge_panel_err_detect_init(panel);
 	}
 
-	if (panel->lge.use_irc_ctrl && panel->lge.ddic_ops &&
-			panel->lge.ddic_ops->set_irc_default_state) {
+	if ((panel->lge.use_irc_ctrl || panel->lge.use_ace_ctrl) &&
+			panel->lge.ddic_ops && panel->lge.ddic_ops->set_irc_default_state) {
 		panel->lge.irc_current_state = 0;
 		panel->lge.ddic_ops->set_irc_default_state(panel);
 	}
@@ -343,8 +347,11 @@ char *lge_ddic_cmd_set_prop_map[LGE_DDIC_DSI_CMD_SET_MAX] = {
 	"lge,mdss-dsi-saturation-command",
 	"lge,mdss-dsi-hue-command",
 	"lge,mdss-dsi-sharpness-command",
+	"lge,mdss-dsi-cm-cinema",
 	"lge,mdss-dsi-cm-sports",
 	"lge,mdss-dsi-cm-game",
+	"lge,mdss-dsi-cm-photo",
+	"lge,mdss-dsi-cm-web",
 	"lge,detect-vert-line-restore-command",
 	"lge,detect-black-vert-line-command",
 	"lge,detect-white-vert-line-command",
@@ -359,11 +366,36 @@ char *lge_ddic_cmd_set_prop_map[LGE_DDIC_DSI_CMD_SET_MAX] = {
 	"lge,ddic-register-unlock",
 	"lge,mdss-dsi-ve-on-command",
 	"lge,mdss-dsi-ve-off-command",
+	"lge,mdss-dsi-brighter-on-command",
+	"lge,mdss-dsi-brighter-off-command",
 	"lge,mdss-dsi-hdr-set",
 	"lge,mdss-dsi-irc-command",
 	"lge,mdss-dsi-ace-tune-command",
 	"lge,mdss-dsi-ace-restore-command",
+	"lge,digital-gamma-set",
 	"lge,mdss-dsi-aod-area-command",
+	"lge,color-mode-cmds-dummy",
+	"lge,mdss-dsi-high-temp-tune0-command",
+	"lge,mdss-dsi-high-temp-tune1-command",
+	"lge,mdss-dsi-high-temp-tune2-command",
+	"lge,mdss-dsi-high-temp-tune3-command",
+	"lge,mdss-dsi-high-temp-tune4-command",
+	"lge,color-mode-set",
+	"lge,custom-rgb-hue-lut",
+	"lge,saturation-lut",
+	"lge,sharpness-lut",
+	"lge,trueview-lut",
+	"lge,ddic-dsi-br-ctrl-ext-command",
+	"lge,mdss-dsi-tc-perf-on-command",
+	"lge,mdss-dsi-tc-perf-off-command",
+	"lge,rgb-lut",
+	"lge,ace-lut",
+	"lge,mdss-dsi-fp-lhbm-ready-command",
+	"lge,mdss-dsi-fp-lhbm-exit-command",
+	"lge,mdss-dsi-fp-lhbm-on-command",
+	"lge,mdss-dsi-fp-lhbm-off-command",
+	"lge,mdss-dsi-fp-lhbm-aod-to-fps",
+	"lge,mdss-dsi-fp-lhbm-fps-to-aod",
 };
 
 char *lge_ddic_cmd_set_state_map[LGE_DDIC_DSI_CMD_SET_MAX] = {
@@ -394,8 +426,11 @@ char *lge_ddic_cmd_set_state_map[LGE_DDIC_DSI_CMD_SET_MAX] = {
 	"lge,mdss-dsi-saturation-command-state",
 	"lge,mdss-dsi-hue-command-state",
 	"lge,mdss-dsi-sharpness-command-state",
+	"lge,mdss-dsi-cm-cinema-state",
 	"lge,mdss-dsi-cm-sports-state",
 	"lge,mdss-dsi-cm-game-state",
+	"lge,mdss-dsi-cm-photo-state",
+	"lge,mdss-dsi-cm-web-state",
 	"lge,detect-vert-line-restore-command-state",
 	"lge,detect-black-vert-line-command-state",
 	"lge,detect-white-vert-line-command-state",
@@ -410,11 +445,36 @@ char *lge_ddic_cmd_set_state_map[LGE_DDIC_DSI_CMD_SET_MAX] = {
 	"lge,ddic-register-lock-unlock-state",
 	"lge,mdss-dsi-ve-on-command-state",
 	"lge,mdss-dsi-ve-off-command-state",
+	"lge,mdss-dsi-brighter-on-command-state",
+	"lge,mdss-dsi-brighter-off-command-state",
 	"lge,mdss-dsi-hdr-set-state",
 	"lge,mdss-dsi-irc-command-state",
 	"lge,mdss-dsi-ace-command-state",
 	"lge,mdss-dsi-ace-command-state",
+	"lge,digital-gamma-set-state",
 	"lge,mdss-dsi-aod-area-command-state",
+	"lge,color-mode-cmds-dummy-state",
+	"lge,mdss-dsi-high-temp-tune0-command-state",
+	"lge,mdss-dsi-high-temp-tune1-command-state",
+	"lge,mdss-dsi-high-temp-tune2-command-state",
+	"lge,mdss-dsi-high-temp-tune3-command-state",
+	"lge,mdss-dsi-high-temp-tune4-command-state",
+	"lge,color-mode-set-state",
+	"lge,custom-rgb-hue-lut-state",
+	"lge,saturation-lut-state",
+	"lge,sharpness-lut-state",
+	"lge,trueview-lut-state",
+	"lge,ddic-dsi-br-ctrl-ext-command-state",
+	"lge,mdss-dsi-tc-perf-on-command-state",
+	"lge,mdss-dsi-tc-perf-off-command-state",
+	"lge,rgb-lut-state",
+	"lge,ace-lut-state",
+	"lge,mdss-dsi-fp-lhbm-ready-command-state",
+	"lge,mdss-dsi-fp-lhbm-exit-command-state",
+	"lge,mdss-dsi-fp-lhbm-on-command-state",
+	"lge,mdss-dsi-fp-lhbm-off-command-state",
+	"lge,mdss-dsi-fp-lhbm-aod-to-fps-state",
+	"lge,mdss-dsi-fp-lhbm-fps-to-aod-state",
 };
 
 /* lge_ddic_dsi_panel_tx_cmd_set for LGE DSI CMD SETS*/

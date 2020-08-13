@@ -795,17 +795,17 @@ bool workaround_skipping_vusb_delay_enabled(void) {
 // LGE Workaround : Avoiding MBG fault on SBU pin
 ////////////////////////////////////////////////////////////////////////////
 
-#ifdef CONFIG_LGE_USB_SWITCH_FUSB252
-#include <linux/usb/fusb252.h>
+#ifdef CONFIG_LGE_USB_SBU_SWITCH
+#include <linux/usb/lge_sbu_switch.h>
 // Rather than accessing pointer directly, Referring it as a singleton instance
-static struct fusb252_instance* workaround_avoiding_mbg_fault_singleton(void) {
+static struct lge_sbu_switch_instance* workaround_avoiding_mbg_fault_singleton(void) {
 
-	static struct fusb252_desc 	workaround_amf_description = {
-		.flags  = FUSB252_FLAG_SBU_AUX
-			| FUSB252_FLAG_SBU_USBID
-			| FUSB252_FLAG_SBU_FACTORY_ID,
+	static struct lge_sbu_switch_desc 	workaround_amf_description = {
+		.flags  = LGE_SBU_SWITCH_FLAG_SBU_AUX
+			| LGE_SBU_SWITCH_FLAG_SBU_USBID
+			| LGE_SBU_SWITCH_FLAG_SBU_FACTORY_ID,
 	};
-	static struct fusb252_instance*	workaround_amf_instance;
+	static struct lge_sbu_switch_instance*	workaround_amf_instance;
 	static DEFINE_MUTEX(workaround_amf_mutex);
 	struct smb_charger* chg;
 
@@ -814,9 +814,9 @@ static struct fusb252_instance* workaround_avoiding_mbg_fault_singleton(void) {
 		chg = workaround_helper_chg();
 		if (IS_ERR_OR_NULL(workaround_amf_instance) && chg) {
 			workaround_amf_instance
-				= devm_fusb252_instance_register(chg->dev, &workaround_amf_description);
+				= devm_lge_sbu_switch_instance_register(chg->dev, &workaround_amf_description);
 			if (IS_ERR_OR_NULL(workaround_amf_instance))
-				devm_fusb252_instance_unregister(chg->dev, workaround_amf_instance);
+				devm_lge_sbu_switch_instance_unregister(chg->dev, workaround_amf_instance);
 		}
 		mutex_unlock(&workaround_amf_mutex);
 	}
@@ -826,32 +826,32 @@ static struct fusb252_instance* workaround_avoiding_mbg_fault_singleton(void) {
 
 bool workaround_avoiding_mbg_fault_uart(bool enable) {
 	// Preparing instance and checking validation of it.
-	struct fusb252_instance* instance
+	struct lge_sbu_switch_instance* instance
 		= workaround_avoiding_mbg_fault_singleton();
 	if (!instance)
 		return false;
 
 	if (enable) {
-		if (fusb252_get_current_flag(instance) != FUSB252_FLAG_SBU_AUX)
-			fusb252_get(instance, FUSB252_FLAG_SBU_AUX);
+		if (lge_sbu_switch_get_current_flag(instance) != LGE_SBU_SWITCH_FLAG_SBU_AUX)
+			lge_sbu_switch_get(instance, LGE_SBU_SWITCH_FLAG_SBU_AUX);
 	}
 	else
-		fusb252_put(instance, FUSB252_FLAG_SBU_AUX);
+		lge_sbu_switch_put(instance, LGE_SBU_SWITCH_FLAG_SBU_AUX);
 
 	return true;
 }
 
 bool workaround_avoiding_mbg_fault_usbid(bool enable) {
 	// Preparing instance and checking validation of it.
-	struct fusb252_instance* instance
+	struct lge_sbu_switch_instance* instance
 		= workaround_avoiding_mbg_fault_singleton();
 	if (!instance)
 		return false;
 
 	if (enable)
-		fusb252_get(instance, FUSB252_FLAG_SBU_FACTORY_ID);
+		lge_sbu_switch_get(instance, LGE_SBU_SWITCH_FLAG_SBU_FACTORY_ID);
 	else
-		fusb252_put(instance, FUSB252_FLAG_SBU_FACTORY_ID);
+		lge_sbu_switch_put(instance, LGE_SBU_SWITCH_FLAG_SBU_FACTORY_ID);
 
 	return true;
 }
@@ -1044,3 +1044,34 @@ void workaround_check_unknown_cable_clear(struct smb_charger *chg) {
 	vote(chg->apsd_disable_votable, WA_CUC_VOTER, false, 0);
 }
 
+
+////////////////////////////////////////////////////////////////////////////
+// LGE Workaround : Fake present for unofficial PD Charger
+////////////////////////////////////////////////////////////////////////////
+
+#define FAKE_DELAY_MS	500
+static bool workaround_fake_pd_hard_reset = false;
+
+static void workaround_fake_pd_hard_reset_main(struct work_struct *unused) {
+	struct smb_charger*  chg = workaround_helper_chg();
+
+	if (!chg) {
+		pr_info("[W/A] FHR) 'chg' is not ready\n");
+		return;
+	}
+	workaround_fake_pd_hard_reset = false;
+	power_supply_changed(chg->usb_psy);
+}
+
+static DECLARE_DELAYED_WORK(workaround_fake_pd_hard_reset_dwork, workaround_fake_pd_hard_reset_main);
+
+void workaround_fake_pd_hard_reset_trigger(void) {
+	workaround_fake_pd_hard_reset = true;
+	pr_info("[W/A] FHR) Start to faking present for pd_hard_reset\n");
+	schedule_delayed_work(&workaround_fake_pd_hard_reset_dwork,
+			round_jiffies_relative(msecs_to_jiffies(FAKE_DELAY_MS)));
+}
+
+bool workaround_fake_pd_hard_reset_show(void) {
+	return workaround_fake_pd_hard_reset;
+}

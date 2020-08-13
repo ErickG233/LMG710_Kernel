@@ -408,6 +408,7 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 			input_event(input, type, button->code, button->value);
 	} else {
 		input_event(input, type, button->code, state);
+		pr_err("gpio_keys_report_event: code(%d), value(%d)\n",button->code, state);
 #ifdef CONFIG_LGE_HANDLE_PANIC
 		lge_gen_key_panic(button->code, state);
 #endif

@@ -8,6 +8,12 @@
 #include "cam_debug_util.h"
 #include "lgit_onsemi_actuator_utils.h"
 
+#if defined(CONFIG_MACH_SDM845_STYLE3LM_DCM_JP)
+#define REG_ADDR_SOC_0 0x3
+#else
+#define REG_ADDR_SOC_0 0x84
+#endif
+
 extern struct class* get_camera_class(void);
 extern void actuator_create_sysfs(struct cam_actuator_ctrl_t *a_ctrl);
 extern void actuator_destroy_sysfs(struct cam_actuator_ctrl_t *a_ctrl);
@@ -136,7 +142,7 @@ extern bool msm_act_data_enqueue(uint32_t reg_addr, uint32_t reg_data,
 	uint64_t hall_readout_time;
     int16_t  act_hall;
 
-    if (a_ctrl == NULL || reg_addr != 0x84) {
+    if (a_ctrl == NULL || reg_addr != REG_ADDR_SOC_0) {
         return true;
     }
 

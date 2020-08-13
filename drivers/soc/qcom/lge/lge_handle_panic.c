@@ -32,6 +32,7 @@
 #include <soc/qcom/subsystem_restart.h>
 
 #include <soc/qcom/lge/lge_handle_panic.h>
+#include <soc/qcom/lge/board_lge.h>
 
 #include <linux/input.h>
 
@@ -188,6 +189,8 @@ inline static void lge_set_key_crash_cnt(int key, int* clear)
 int uart_key_press_status=0;
 extern int debug_accessory_status;
 #endif
+extern bool unified_nodes_show(const char* key, char* value);
+
 void lge_gen_key_panic(int key, int status)
 {
 	int clear = 1;
@@ -196,59 +199,101 @@ void lge_gen_key_panic(int key, int status)
 
 	int ret = -1;
 	bool power_supply_present = false;
-	if (debug_accessory_status) {
-		extern bool unified_nodes_show(const char* key, char* value);
-		char buff [16] = { 0, };
-		ret = unified_nodes_show("charger_name", buff);
-		if (ret == 1 && strcmp(buff, "NONE")) {
-			power_supply_present = true;
-		} else {
-			power_supply_present = false;
-		}
-	}
+	char buff [16] = { 0, };
 
-	if(!lge_get_download_mode()
-		&& !(debug_accessory_status && !power_supply_present))
-		return;
+	ret = unified_nodes_show("charger_name", buff);
 
-#ifdef CONFIG_LGE_USB_DEBUGGER
-	if(key == KEY_VOLUMEUP) {
-		uart_key_press_status = status ? (uart_key_press_status | VOLUP_KEY_PRESSED) : 0;
-	} else if(key == KEY_POWER) {
-		uart_key_press_status = status ? (uart_key_press_status | POW_KEY_PRESSED) : 0;
-	}
-#endif
+	if(lge_get_factory_boot()) {
+		if (ret == 1 && (!strcmp(buff, "QC3") || !strcmp(buff, "PD"))) {
+			if(!lge_get_download_mode())
+				return;
 
-	if(((key == KEY_VOLUMEDOWN) && (order == 0))
-		|| ((key == KEY_POWER) && (order == 1))
-		|| ((key == KEY_VOLUMEUP) && (order == 2))) {
-		if(status == 0) {
-			if(valid == 1) {
-				valid = 0;
-				lge_set_key_crash_cnt(key, &clear);
+			if(((key == KEY_VOLUMEDOWN) && (order == 0))
+					|| ((key == KEY_POWER) && (order == 1))
+					|| ((key == KEY_VOLUMEUP) && (order == 2))) {
+				if(status == 0) {
+					if(valid == 1) {
+						valid = 0;
+						lge_set_key_crash_cnt(key, &clear);
+					}
+				} else {
+					valid = 1;
+					return;
+				}
+			}
+
+			if (clear == 1) {
+				if (valid == 1)
+					valid = 0;
+
+				if (key_crash_cnt > 0 )
+					key_crash_cnt = 0;
+
+				pr_debug("%s: Ready to panic %d : cleared!\n", __func__, key);
+				return;
+			}
+
+			if (key_crash_cnt >= 16) {
+				if (debug_accessory_status)
+					lge_set_download_mode(1);
+				gen_key_panic = 1;
+				panic("%s: Generate panic by key!\n", __func__);
 			}
 		} else {
-			valid = 1;
 			return;
 		}
-	}
+	} else { // not factory_boot
+		if (debug_accessory_status) {
+			if (ret == 1 && strcmp(buff, "NONE")) {
+				power_supply_present = true;
+			} else {
+				power_supply_present = false;
+			}
+		}
 
-	if (clear == 1) {
-		if (valid == 1)
-			valid = 0;
+		if(!lge_get_download_mode()
+			&& !(debug_accessory_status && !power_supply_present))
+			return;
 
-		if (key_crash_cnt > 0 )
-			key_crash_cnt = 0;
+#ifdef CONFIG_LGE_USB_DEBUGGER
+		if(key == KEY_VOLUMEUP) {
+			uart_key_press_status = status ? (uart_key_press_status | VOLUP_KEY_PRESSED) : 0;
+		} else if(key == KEY_POWER) {
+			uart_key_press_status = status ? (uart_key_press_status | POW_KEY_PRESSED) : 0;
+		}
+#endif
 
-		pr_debug("%s: Ready to panic %d : cleared!\n", __func__, key);
-		return;
-	}
+		if(((key == KEY_VOLUMEDOWN) && (order == 0))
+			|| ((key == KEY_POWER) && (order == 1))
+			|| ((key == KEY_VOLUMEUP) && (order == 2))) {
+			if(status == 0) {
+				if(valid == 1) {
+					valid = 0;
+					lge_set_key_crash_cnt(key, &clear);
+				}
+			} else {
+				valid = 1;
+				return;
+			}
+		}
 
-	if (key_crash_cnt >= 7) {
-		if (debug_accessory_status)
-			lge_set_download_mode(1);
-		gen_key_panic = 1;
-		panic("%s: Generate panic by key!\n", __func__);
+		if (clear == 1) {
+			if (valid == 1)
+				valid = 0;
+
+			if (key_crash_cnt > 0 )
+				key_crash_cnt = 0;
+
+			pr_debug("%s: Ready to panic %d : cleared!\n", __func__, key);
+			return;
+		}
+
+		if (key_crash_cnt >= 7) {
+			if (debug_accessory_status)
+				lge_set_download_mode(1);
+			gen_key_panic = 1;
+			panic("%s: Generate panic by key!\n", __func__);
+		}
 	}
 }
 
@@ -276,6 +321,8 @@ static int gen_adsp_panic(const char *val, const struct kernel_param *kp)
 module_param_call(gen_adsp_panic, gen_adsp_panic, param_get_bool,
 		&dummy_arg, S_IWUSR | S_IRUGO | S_IWGRP);
 
+/* remove because gen_mba_panic does not work */
+/*
 static int gen_mba_panic(const char *val, const struct kernel_param *kp)
 {
 	subsystem_restart("mba");
@@ -283,6 +330,7 @@ static int gen_mba_panic(const char *val, const struct kernel_param *kp)
 }
 module_param_call(gen_mba_panic, gen_mba_panic, param_get_bool,
 		&dummy_arg, S_IWUSR | S_IRUGO | S_IWGRP);
+*/
 
 static int gen_modem_panic(const char *val, const struct kernel_param *kp)
 {
@@ -373,14 +421,15 @@ static int gen_wdt_bite(const char *val, const struct kernel_param *kp)
 module_param_call(gen_wdt_bite, gen_wdt_bite, param_get_bool,
 		&dummy_arg, S_IWUSR | S_IRUGO | S_IWGRP);
 
-//FIXME
+/* forced sec wdt bite can cause unexpected bus hang */
+/* remove because gen_sec_wdt_bite does not work */
+/*
 #define REG_MPM2_WDOG_BASE             0xFC4AA000
 #define REG_OFFSET_MPM2_WDOG_RESET     0x0
 #define REG_OFFSET_MPM2_WDOG_BITE_VAL  0x10
 #define REG_VAL_WDOG_RESET_DO_RESET    0x1
 #define REG_VAL_WDOG_BITE_VAL          0x400
 
-/* forced sec wdt bite can cause unexpected bus hang */
 static int gen_sec_wdt_bite(const char *val, const struct kernel_param *kp)
 {
 	void *sec_wdog_virt;
@@ -406,12 +455,13 @@ static int gen_sec_wdt_bite(const char *val, const struct kernel_param *kp)
 }
 module_param_call(gen_sec_wdt_bite, gen_sec_wdt_bite, param_get_bool,
 		&dummy_arg, S_IWUSR | S_IRUGO | S_IWGRP);
+*/
 
 #define SCM_SVC_SEC_WDOG_TRIG  0x08
 
 static int gen_sec_wdt_scm(const char *val, const struct kernel_param *kp)
 {
-	struct scm_desc desc;
+	struct scm_desc desc = { 0, };
 	desc.args[0] = 0;
 	desc.arginfo = SCM_ARGS(1);
 

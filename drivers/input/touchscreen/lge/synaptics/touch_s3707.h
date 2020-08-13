@@ -156,6 +156,9 @@
 #define LPWG_TCI2_FAIL_INDEX_REG	(d->f51.dsc.data_base + 62)
 #define LPWG_TCI2_FAIL_BUFFER_REG	(d->f51.dsc.data_base + 63)
 
+#define LPWG_ACTIVE_AREA_REG		(d->f12_reg.ctrl[18])
+#define ACT_SENSELESS_AREA_W		90	/* pixel */
+
 /* Real-Time LPWG Fail Reason Ctrl */
 #define NUM_OF_EACH_FINGER_DATA		8
 #define MAX_NUM_OF_FAIL_REASON		2
@@ -532,6 +535,13 @@ struct s3707_lpwg_abs_ctrl {
 	s16 offset_y;
 };
 
+struct s3707_ai_pick_ctrl {
+	bool enable;
+	struct s3707_active_area area;
+	struct s3707_active_area border_area;
+	struct s3707_active_area total_area;
+};
+
 struct s3707_lpwg_abs_buf {
 	u8 enable;
 	struct s3707_active_area area;
@@ -557,6 +567,7 @@ struct s3707_data {
 	struct s3707_prd_info prd_info;
 	struct s3707_noise_ctrl noise;
 	struct synaptics_blank blank_status;
+	struct s3707_ai_pick_ctrl ai_pick;
 
 	u8 curr_page;
 	u8 object_report;

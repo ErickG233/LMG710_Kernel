@@ -958,9 +958,10 @@ const char * const vmstat_text[] = {
 	"nr_unevictable",
 	"nr_isolated_anon",
 	"nr_isolated_file",
-	"refault_inactive_file",
-	"refault_active_file",
-	"refault_nodereclaim",
+	"workingset_refault",
+	"workingset_activate",
+	"workingset_restore",
+	"workingset_nodereclaim",
 	"nr_anon_pages",
 	"nr_mapped",
 	"nr_file_pages",
@@ -976,6 +977,7 @@ const char * const vmstat_text[] = {
 	"nr_vmscan_immediate_reclaim",
 	"nr_dirtied",
 	"nr_written",
+	"nr_indirectly_reclaimable",
 
 	/* enum writeback_stat_item counters */
 	"nr_dirty_threshold",

@@ -1263,6 +1263,9 @@ static ssize_t atmf04_show_regproxdata(struct device *dev,
 	memset(buf_line, 0, sizeof(buf_line));
 	memset(buf_regproxdata, 0, sizeof(buf_regproxdata));
 
+        // fix that read calibration done register in MID
+        check_firmware_ready(client);
+
 	init_touch_md = i2c_smbus_read_byte_data(client, I2C_ADDR_SYS_STAT);
 
 	cs_per[0] = i2c_smbus_read_byte_data(client,I2C_ADDR_PER_H);

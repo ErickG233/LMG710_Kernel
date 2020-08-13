@@ -10,6 +10,8 @@ obj-y				+= bus/
 
 obj-$(CONFIG_GENERIC_PHY)	+= phy/
 
+obj-$(CONFIG_VSERVICES_SUPPORT)	+= vservices/
+
 # GPIO must come after pinctrl as gpios may need to mux pins etc
 obj-$(CONFIG_PINCTRL)		+= pinctrl/
 obj-$(CONFIG_GPIOLIB)		+= gpio/
@@ -186,6 +188,6 @@ obj-$(CONFIG_LGE_BROADCAST_TDMB) += broadcast/
 obj-$(CONFIG_TSPDRV) += tspdrv/
 
 # Mobicore
-ifeq ($(LAOP_BUILD), KR)
+ifeq ($(TARGET_LGE_REGION), KR)
 obj-$(CONFIG_TRUSTONIC_TEE) += gud/
 endif

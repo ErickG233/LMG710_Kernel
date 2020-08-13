@@ -268,10 +268,9 @@ static int stop_kpolicy(void)
 		return -EFAULT;
 
 	dev = get_cpu_device(dest_cpu);
-	/*
 	if (dev && !cpu_is_offline(dev->id)) {
 		sugov_restore_freq(dest_cpu);
-	}*/
+	}
 
 	return 0;
 }
@@ -295,7 +294,7 @@ static int set_dst_cpu(int freq, int cpu)
 		pcpu->policy = policy;
 		goto noti;
 	}
-/*
+
 	if (!sugov_get_stat(cpu)) {
 		if (policy->cur != freq) {
 			pr_debug(PRM_TAG "[TT] cpu %d, freq : %d\n", cpu, freq);
@@ -303,7 +302,7 @@ static int set_dst_cpu(int freq, int cpu)
 		}
 		return 0;
 	}
-*/
+
 noti:
 	return -EINVAL;
 }
@@ -415,12 +414,12 @@ static int get_dst_freq(int dest_cpu, int lvl)
 		pr_err(PRM_TAG "%s cpu%d is not valid\n", __func__, dest_cpu);
 		return -1;
 	}
-/*
+
 	if (sugov_get_stat(dest_cpu)) {
 		pr_err(PRM_TAG "%s gov %d is not valid\n", __func__, dest_cpu);
 		return -1;
 	}
-*/
+
 	return get_opt_frequency(cl, lvl);
 }
 
@@ -500,7 +499,7 @@ static void frequency_process(struct work_struct *work)
 	if (!platform_data->notify_info.enable)
 		goto exit;
 
-	if (!platform_data->state & RUNNING)
+	if (!(platform_data->state & RUNNING))
 		goto exit;
 
 	get_online_cpus();

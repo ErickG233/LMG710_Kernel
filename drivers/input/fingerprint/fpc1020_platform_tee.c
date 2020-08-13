@@ -37,6 +37,18 @@
 #include <linux/regulator/consumer.h>
 #include <linux/pm_wakeup.h>
 #include <linux/input.h>
+
+#define CONFIG_LGE_FB_NOTIFIER
+#define CONFIG_LGE_CUSTOM_FB_NOTIFIER
+
+#ifdef CONFIG_LGE_FB_NOTIFIER
+#include <linux/fb.h>
+#include <linux/notifier.h>
+#ifdef CONFIG_LGE_CUSTOM_FB_NOTIFIER
+#include <linux/lge_panel_notify.h>
+#endif
+#endif // CONFIG_LGE_FB_NOTIFIER
+
 #define FPC_TTW_HOLD_TIME 1000
 
 #define RESET_LOW_SLEEP_MIN_US 5000
@@ -81,7 +93,73 @@ struct fpc1020_data {
 	struct mutex lock; /* To set/get exported values in sysfs */
 	bool prepared;
 	atomic_t wakeup_enabled; /* Used both in ISR and non-ISR */
+
+#ifdef CONFIG_LGE_FB_NOTIFIER
+	struct notifier_block fb_notifier;
+#endif // CONFIG_LGE_FB_NOTIFIER
 };
+
+#ifdef CONFIG_LGE_FB_NOTIFIER
+#ifdef CONFIG_LGE_CUSTOM_FB_NOTIFIER
+static int (*fb_notifier_register)(struct notifier_block *nb) = lge_panel_notifier_register_client;
+static int (*fb_notifier_unregister)(struct notifier_block *nb) = lge_panel_notifier_unregister_client;
+#else
+static int (*fb_notifier_register)(struct notifier_block *nb) = fb_register_client;
+static int (*fb_notifier_unregister)(struct notifier_block *nb) = fb_unregister_client;
+#endif
+
+static int fb_notifier_callback(struct notifier_block *nb, unsigned long action, void *data)
+{
+	struct fpc1020_data *fpc = container_of(nb, struct fpc1020_data, fb_notifier);
+#ifdef CONFIG_LGE_CUSTOM_FB_NOTIFIER
+	static const int BLANK = LGE_PANEL_EVENT_BLANK;
+	struct lge_panel_notifier *event = data;
+	int *event_data = &event->state;
+#else
+	static const int BLANK = FB_EVENT_BLANK;
+	struct fb_event *event = data;
+	int *event_data = event->data;
+#endif
+	char *envp[2];
+
+	//printk(KERN_INFO "fingerprint " "%s: action %lu event->data %d\n", __func__, action, *event_data);
+
+	/* If we aren't interested in this event, skip it immediately ... */
+	if (action != BLANK) {
+		return NOTIFY_DONE;
+	}
+
+	switch (*event_data) {
+#ifdef CONFIG_LGE_CUSTOM_FB_NOTIFIER
+	case LGE_PANEL_STATE_UNBLANK: // U3, UNBLANK
+#else
+	case FB_BLANK_UNBLANK:
+#endif
+		envp[0] = "SCREEN=1";
+		break;
+
+#ifdef CONFIG_LGE_CUSTOM_FB_NOTIFIER
+	case LGE_PANEL_STATE_BLANK: // U0, BLANK
+	case LGE_PANEL_STATE_LP1: // U2_UNBLANK @ AOD
+	case LGE_PANEL_STATE_LP2: // U2_BLANK @ AOD
+#else
+	case FB_BLANK_POWERDOWN:
+#endif
+		envp[0] = "SCREEN=0";
+		break;
+
+	default:
+		printk(KERN_WARNING "fingerprint " "%s: skip event data %d\n", __func__, *event_data);
+		return NOTIFY_DONE;
+	}
+
+	envp[1] = NULL;
+	//printk(KERN_INFO "fingerprint " "%s: envp[0] %s\n", __func__, envp[0]);
+	kobject_uevent_env(&fpc->input->dev.kobj, KOBJ_CHANGE, envp);
+
+	return NOTIFY_OK;
+}
+#endif // CONFIG_LGE_FB_NOTIFIER
 
 static int vreg_setup(struct fpc1020_data *fpc1020, const char *name,
 	bool enable)
@@ -543,6 +621,7 @@ static int fpc1020_probe(struct platform_device *pdev)
 		goto exit;
 	}
 
+	dev->init_name = "fpc_dev";
 	atomic_set(&fpc1020->wakeup_enabled, 0);
 
 	irqf = IRQF_TRIGGER_RISING | IRQF_ONESHOT;
@@ -598,6 +677,16 @@ static int fpc1020_probe(struct platform_device *pdev)
 		(void)device_prepare(fpc1020, true);
 	}
 
+#ifdef CONFIG_LGE_FB_NOTIFIER
+	/* Register screen on/off callback. */
+	fpc1020->fb_notifier.notifier_call = fb_notifier_callback;
+	rc = fb_notifier_register(&fpc1020->fb_notifier);
+	if (rc) {
+		printk(KERN_ERR "fingerprint " "%s: could not register fb notifier", __func__);
+		goto exit;
+	}
+#endif // CONFIG_LGE_FB_NOTIFIER
+
 	rc = hw_reset(fpc1020);
 
 	dev_info(dev, "%s: ok\n", __func__);
@@ -609,6 +698,10 @@ exit:
 static int fpc1020_remove(struct platform_device *pdev)
 {
 	struct fpc1020_data *fpc1020 = platform_get_drvdata(pdev);
+
+#ifdef CONFIG_LGE_FB_NOTIFIER
+	fb_notifier_unregister(&fpc1020->fb_notifier);
+#endif // CONFIG_LGE_FB_NOTIFIER
 
 	sysfs_remove_group(&fpc1020->input->dev.kobj, &attribute_group);
 	mutex_destroy(&fpc1020->lock);

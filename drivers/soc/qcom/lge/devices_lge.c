@@ -162,6 +162,7 @@ lge_boot_mode_t lge_get_boot_mode(void)
 {
 	return lge_boot_mode;
 }
+EXPORT_SYMBOL(lge_get_boot_mode);
 
 bool lge_get_factory_boot(void)
 {
@@ -399,6 +400,8 @@ int __init lge_sku_carrier_init(char *s)
 		lge_sku_carrier = HW_SKU_KR_SKT;
 	else if (!strcmp(s, "KT"))
 		lge_sku_carrier = HW_SKU_KR_KT;
+	else if (!strcmp(s, "JP_ALL"))
+		lge_sku_carrier = HW_SKU_JP;
 	else if (!strcmp(s, "NA_GSM"))
 		lge_sku_carrier = HW_SKU_NA_GSM;
 	else if (!strcmp(s, "NA_ATT"))
@@ -488,6 +491,8 @@ int __init lge_ntcode_op_init(char *s)
 		lge_ntcode_op = OP_OPEN_US;
 	else if (!strcmp(s, "OPEN_CA"))
 		lge_ntcode_op = OP_OPEN_CA;
+	else if (!strcmp(s, "SPR"))
+		lge_ntcode_op = OP_SPR_US;
 	else
 		lge_ntcode_op = OP_GLOBAL;
 

@@ -5,7 +5,6 @@
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
 #include <video/mipi_display.h>
-#include <linux/kallsyms.h>
 #include <linux/lge_panel_notify.h>
 #include <soc/qcom/lge/board_lge.h>
 
@@ -43,7 +42,8 @@ extern int dsi_panel_alloc_cmd_packets(struct dsi_panel_cmd_set *cmd,
 
 extern void lge_dsi_panel_blmap_free(struct dsi_panel *panel);
 extern int lge_dsi_panel_parse_blmap(struct dsi_panel *panel, struct device_node *of_node);
-
+extern int lge_dsi_panel_parse_brightness(struct dsi_panel *panel,	struct device_node *of_node);
+extern void lge_panel_drs_create_sysfs(struct dsi_panel *panel, struct class *class_panel);
 extern void lge_panel_reg_create_sysfs(struct dsi_panel *panel, struct class *class_panel);
 extern void lge_ddic_ops_init(struct dsi_panel *panel);
 extern void lge_ddic_feature_init(struct dsi_panel *panel);
@@ -55,7 +55,7 @@ extern int lge_drs_mngr_freeze_state_hal(int enable);
 extern int lge_mdss_dsi_panel_cmd_read(struct dsi_panel *panel,
 					u8 cmd, int cnt, char* ret_buf);
 extern int lge_mdss_dsi_panel_cmds_backup(struct dsi_panel *panel, char *owner,
-				enum dsi_cmd_set_type type, u8 reg, int nth_cmds);
+				enum lge_ddic_dsi_cmd_set_type type, u8 reg, int nth_cmds);
 static int lge_dsi_panel_pin_seq(struct lge_panel_pin_seq *seq);
 extern int lge_ddic_dsi_panel_tx_cmd_set(struct dsi_panel *panel,
 				enum lge_ddic_dsi_cmd_set_type type);
@@ -104,7 +104,34 @@ static void lge_set_blank_called(void)
 }
 #endif
 
-static inline bool cmd_set_exists(struct dsi_panel *panel, enum dsi_cmd_set_type type)
+static int lge_dsi_panel_mode_set(struct dsi_panel *panel)
+{
+	bool reg_backup_cond = false;
+
+	if (!panel) {
+		pr_err("invalid params\n");
+		return -EINVAL;
+	}
+	reg_backup_cond = !(panel->lge.use_ddic_reg_backup^panel->lge.ddic_reg_backup_complete);
+
+	pr_info("backup=%d\n", reg_backup_cond);
+	if (reg_backup_cond && panel->lge.use_color_manager) {
+		if (panel->lge.ddic_ops &&
+				panel->lge.ddic_ops->lge_set_screen_mode)
+			panel->lge.ddic_ops->lge_set_screen_mode(panel, true);
+
+		if (panel->lge.ddic_ops &&
+				panel->lge.ddic_ops->lge_bc_dim_set)
+			panel->lge.ddic_ops->lge_bc_dim_set(panel, BC_DIM_ON, BC_DIM_FRAMES_NORMAL);
+		panel->lge.is_sent_bc_dim_set = true;
+	} else {
+		pr_warn("skip ddic mode set on booting or not supported!\n");
+	}
+
+	return 0;
+}
+
+static inline bool cmd_set_exists(struct dsi_panel *panel, enum lge_ddic_dsi_cmd_set_type type)
 {
 	if (!panel || !panel->cur_mode)
 		return false;
@@ -186,7 +213,7 @@ static void set_aod_area(struct dsi_panel *panel)
 	return;
 }
 
-static void set_lp(struct dsi_panel *panel, enum lge_panel_lp_state lp_state, enum dsi_cmd_set_type cmd_set_type)
+static void set_lp(struct dsi_panel *panel, enum lge_panel_lp_state lp_state, enum lge_ddic_dsi_cmd_set_type cmd_set_type)
 {
 	int rc = 0;
 
@@ -369,7 +396,7 @@ static enum lge_ddic_dsi_cmd_set_type dsi_panel_select_cmd_type(struct dsi_panel
 		type = LGE_DDIC_DSI_SET_LP2;
 	} else if (panel->lge.partial_area_vertical_changed ||
 			panel->lge.partial_area_height_changed) {
-		type = LGE_DDIC_DSI_SET_LP1;
+		type = LGE_DDIC_DSI_AOD_AREA;
 	} else {
 		pr_debug("skip command\n");
 	}
@@ -591,7 +618,7 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 		panel->lge.panel_state = LGE_PANEL_NOLP;
 		rc = dsi_panel_update_lp_state(panel, LGE_PANEL_NOLP);
 		pr_info("going to on from off\n");
-		return 0;
+		goto mode_set;
 	} else if (lp_mode == SDE_MODE_DPMS_OFF) {
 		panel->lge.panel_state = LGE_PANEL_OFF;
 		rc = dsi_panel_update_lp_state(panel, LGE_PANEL_OFF);
@@ -604,17 +631,15 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 		pr_err("fail to send lp command\n");
 	}
 
-	if (panel->lge.use_color_manager &&
-			panel->lge.ddic_ops &&
-			panel->lge.ddic_ops->lge_display_control_store)
-		panel->lge.ddic_ops->lge_display_control_store(panel, true);
-
 	rc = dsi_panel_update_lp_state(panel, LGE_PANEL_NOLP);
 	if (rc < 0) {
 		pr_err("fail to update lp state\n");
 	}
 
 	lge_panel_notifier_call_chain(LGE_PANEL_EVENT_BLANK, 0, LGE_PANEL_STATE_UNBLANK); // U3, UNBLANK
+
+mode_set:
+	lge_dsi_panel_mode_set(panel);
 
 	return rc;
 }
@@ -669,8 +694,13 @@ error_disable_gpio_before_ddvd:
 	if (panel->lge.reset_after_ddvd)
 		dsi_pwr_enable_regulator(&panel->power_info, false);
 
-	if (dsi_panel_full_power_seq(panel) || panel->lge.use_panel_reset_low_before_lp11)
-		lge_dsi_panel_pin_seq(panel->lge.panel_off_seq);
+	if (dsi_panel_full_power_seq(panel) || panel->lge.use_panel_reset_low_before_lp11) {
+		if(panel->lge.pins) {
+			lge_dsi_panel_pin_seq(panel->lge.panel_off_seq);
+		} else {
+			dsi_pwr_enable_regulator(&panel->power_info, false);
+		}
+	}
 
 error_pinctrl_false:
 		(void)dsi_panel_set_pinctrl_state(panel, false);
@@ -719,10 +749,12 @@ int dsi_panel_power_off(struct dsi_panel *panel)
 		gpio_set_value(panel->reset_config.lcd_mode_sel_gpio, 0);
 
 	if (panel->lge.use_labibb && panel->lge.reset_after_ddvd) {
-		if (dsi_panel_full_power_seq(panel)) {
-			dsi_pwr_set_regulator(&panel->power_info, REGULATOR_MODE_TTW_OFF);
-		} else {
-			dsi_pwr_set_regulator(&panel->power_info, REGULATOR_MODE_TTW_ON);
+		if (panel->lge.is_incell) {
+			if (dsi_panel_full_power_seq(panel)) {
+				dsi_pwr_set_regulator(&panel->power_info, REGULATOR_MODE_TTW_OFF);
+			} else {
+				dsi_pwr_set_regulator(&panel->power_info, REGULATOR_MODE_TTW_ON);
+			}
 		}
 		rc = dsi_pwr_enable_regulator(&panel->power_info, false);
 		if (rc)
@@ -747,7 +779,7 @@ int dsi_panel_power_off(struct dsi_panel *panel)
 	else if (!panel->lge.use_ddic_reg_backup && panel->lge.is_sent_bc_dim_set)
 		panel->lge.is_sent_bc_dim_set = false;
 
-	if (panel->lge.use_irc_ctrl) {
+	if (panel->lge.use_irc_ctrl || panel->lge.use_ace_ctrl) {
 		panel->lge.ddic_ops->set_irc_default_state(panel);
 		panel->lge.irc_pending = false;
 	}
@@ -770,10 +802,12 @@ static int dsi_panel_reset_off(struct dsi_panel *panel)
 	usleep_range(5000, 5000);
 
 	if (panel->lge.use_labibb && !panel->lge.reset_after_ddvd) {
-		if (dsi_panel_full_power_seq(panel)) {
-			dsi_pwr_set_regulator(&panel->power_info, REGULATOR_MODE_TTW_OFF);
-		} else {
-			dsi_pwr_set_regulator(&panel->power_info, REGULATOR_MODE_TTW_ON);
+		if (panel->lge.is_incell) {
+			if (dsi_panel_full_power_seq(panel)) {
+				dsi_pwr_set_regulator(&panel->power_info, REGULATOR_MODE_TTW_OFF);
+			} else {
+				dsi_pwr_set_regulator(&panel->power_info, REGULATOR_MODE_TTW_ON);
+			}
 		}
 		rc = dsi_pwr_enable_regulator(&panel->power_info, false);
 		if (rc)
@@ -977,6 +1011,14 @@ int dsi_panel_unprepare(struct dsi_panel *panel)
 		return -EINVAL;
 	}
 
+	if (panel->lge.use_ddic_reg_backup) {
+		if (atomic_read(&panel->lge.backup_state) > 0) {
+			pr_warn("WARNING: backup work pending\n");
+			flush_work(&panel->lge.backup_work);
+			atomic_set(&panel->lge.backup_state, 0);
+		}
+	}
+
 	if ((lge_drs_mngr_is_enabled(panel))
 			&& (lge_drs_mngr_get_state(panel) > DRS_IDLE)) {
 		rc = lge_drs_mngr_finish(panel);
@@ -1044,33 +1086,6 @@ int dsi_panel_post_unprepare(struct dsi_panel *panel)
 error:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
-}
-
-int lge_dsi_panel_mode_set(struct dsi_panel *panel)
-{
-	bool reg_backup_cond = false;
-
-	if (!panel) {
-		pr_err("invalid params\n");
-		return -EINVAL;
-	}
-	reg_backup_cond = !(panel->lge.use_ddic_reg_backup^panel->lge.ddic_reg_backup_complete);
-
-	pr_info("backup=%d, mode_set=%d\n", reg_backup_cond, panel->lge.is_sent_bc_dim_set);
-	if (reg_backup_cond && !panel->lge.is_sent_bc_dim_set && panel->lge.use_color_manager) {
-		if (panel->lge.ddic_ops &&
-				panel->lge.ddic_ops->lge_set_screen_mode)
-			panel->lge.ddic_ops->lge_set_screen_mode(panel, true);
-
-		if (panel->lge.ddic_ops &&
-				panel->lge.ddic_ops->lge_bc_dim_set)
-			panel->lge.ddic_ops->lge_bc_dim_set(panel, BC_DIM_ON, BC_DIM_FRAMES_NORMAL);
-		panel->lge.is_sent_bc_dim_set = true;
-	} else {
-		pr_warn("skip ddic mode set on booting or not supported!\n");
-	}
-
-	return 0;
 }
 
 /* @Override */
@@ -1234,16 +1249,13 @@ void lge_mdss_panel_dead_work(struct work_struct *work)
 
 void lge_mdss_report_panel_dead(void)
 {
-	unsigned int **addr;
 	struct dsi_display *display = NULL;
 	struct sde_connector *conn = NULL;
 
-	addr = (unsigned int **)kallsyms_lookup_name("primary_display");
+	display = primary_display;
 
-	if (addr) {
-		display = (struct dsi_display *)*addr;
-	} else {
-		pr_err("primary_display not founded\n");
+	if (!display) {
+		pr_err("display is null\n");
 		return;
 	}
 
@@ -1389,39 +1401,6 @@ static ssize_t mfts_auto_touch_test_mode_set(struct device *dev,
 static DEVICE_ATTR(mfts_auto_touch_test_mode, S_IRUGO | S_IWUSR | S_IWGRP,
 		mfts_auto_touch_test_mode_get, mfts_auto_touch_test_mode_set);
 
-static ssize_t freeze_state_hal_show(struct class *class,
-		struct class_attribute *attr, char *buf)
-{
-	int freeze_state = lge_drs_mngr_get_freeze_state();
-	return scnprintf(buf, PAGE_SIZE, "%d\n", freeze_state);
-}
-
-static ssize_t freeze_state_hal_store(struct class *class,
-		struct class_attribute *attr, const char *buf, size_t size)
-{
-	ssize_t ret = strnlen(buf, PAGE_SIZE);
-	int rc, enable;
-	enum lge_drs_request new_state = DRS_REQUEST_MAX;
-
-	sscanf(buf, "%d", &enable);
-
-	rc = lge_drs_mngr_freeze_state_hal(enable);
-	if (rc < 0) {
-		pr_warn("WARNING: fail to freeze, rc=%d\n", rc);
-	} else {
-		if (enable)
-			new_state = DRS_FREEZE;
-		else
-			new_state = DRS_UNFREEZE;
-
-		lge_drs_mngr_set_freeze_state(new_state);
-	}
-
-	return ret;
-}
-static CLASS_ATTR(freeze_state_hal, S_IRUGO | S_IWUSR | S_IWGRP,
-		freeze_state_hal_show, freeze_state_hal_store);
-
 void lge_panel_factory_create_sysfs(struct dsi_panel *panel, struct class *class_panel)
 {
 	static struct device *panel_reg_dev = NULL;
@@ -1453,9 +1432,6 @@ static void lge_dsi_panel_create_sysfs(struct dsi_panel *panel)
 		if (IS_ERR(class_panel)) {
 			pr_err("Failed to create panel class\n");
 			return;
-		} else {
-			if ((rc = class_create_file(class_panel, &class_attr_freeze_state_hal)) < 0)
-				pr_err("add freeze_state_hal set node fail!\n");
 		}
 	}
 
@@ -1467,14 +1443,16 @@ static void lge_dsi_panel_create_sysfs(struct dsi_panel *panel)
 			if (panel->lge.use_mplus)
 				lge_mplus_create_sysfs(panel_img_tune_sysfs_dev);
 			if (panel->lge.use_color_manager)
-				lge_color_manager_create_sysfs(panel_img_tune_sysfs_dev);
+				lge_color_manager_create_sysfs(panel, panel_img_tune_sysfs_dev);
 		}
 	}
-	if (panel->lge.use_hl_mode || panel->lge.use_irc_ctrl)
+
+	if (panel->lge.use_irc_ctrl || panel->lge.use_ace_ctrl || panel->lge.use_hl_mode)
 		lge_brightness_create_sysfs(panel, class_panel);
 	if (panel->lge.use_ambient)
 		lge_ambient_create_sysfs(panel, class_panel);
 
+	lge_panel_drs_create_sysfs(panel, class_panel);
 	lge_panel_reg_create_sysfs(panel, class_panel);
 	lge_panel_factory_create_sysfs(panel, class_panel);
 	lge_panel_err_detect_create_sysfs(panel, class_panel);
@@ -1828,6 +1806,15 @@ static int lge_dsi_panel_parse_dt(struct dsi_panel *panel, struct device_node *o
 		}
 	}
 
+	panel->lge.true_view_supported = of_property_read_bool(of_node, "lge,true-view-supported");
+	pr_info("use true_view supported=%d\n", panel->lge.true_view_supported);
+
+	panel->lge.use_high_temp_tune = of_property_read_bool(of_node, "lge,use-high-temp-tune");
+	pr_info("use high temp tune=%d\n", panel->lge.use_high_temp_tune);
+
+	panel->lge.use_dim_ctrl = of_property_read_bool(of_node, "lge,use-dim-ctrl");
+	pr_info("use_dim_ctrl=%d\n", panel->lge.use_dim_ctrl);
+
 	return rc;
 }
 
@@ -1842,6 +1829,10 @@ int lge_dsi_panel_get(struct dsi_panel *panel, struct device_node *of_node)
 	rc = lge_dsi_panel_parse_blmap(panel, of_node);
 	if (rc)
 		pr_err("failed to parse blmap, rc=%d\n", rc);
+
+	rc = lge_dsi_panel_parse_brightness(panel, of_node);
+	if (rc)
+		pr_err("failed to parse default brightness, rc=%d\n", rc);
 
 	rc = lge_dsi_panel_parse_dt(panel, of_node);
 	if (rc)
@@ -2044,7 +2035,7 @@ int lge_mdss_dsi_panel_cmd_read(struct dsi_panel *panel, u8 cmd, int cnt, char* 
 }
 
 int lge_mdss_dsi_panel_cmds_backup(struct dsi_panel *panel, char *owner,
-				enum dsi_cmd_set_type type, u8 reg, int nth_cmds)
+				enum lge_ddic_dsi_cmd_set_type type, u8 reg, int nth_cmds)
 {
 	struct dsi_cmd_desc *cmds = NULL;
 	u32 count;

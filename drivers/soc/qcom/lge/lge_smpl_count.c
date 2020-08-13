@@ -22,6 +22,7 @@
 #include <linux/moduleparam.h>
 #include <linux/input/qpnp-power-on.h>
 #include <soc/qcom/smem.h>
+#include <soc/qcom/lge/board_lge.h>
 
 #define MODULE_NAME "lge_smpl_count"
 #define PWR_ON_EVENT_KEYPAD           0x80
@@ -59,6 +60,7 @@ static int read_smpl_count(char *buffer, const struct kernel_param *kp)
 {
 	uint16_t boot_cause;
 	int warm_reset, poff_sts;
+	bool smpl_condition = false;
 
 	boot_cause = power_on_status_info_get();
 	warm_reset = qpnp_pon_is_warm_reset();
@@ -71,13 +73,33 @@ static int read_smpl_count(char *buffer, const struct kernel_param *kp)
 		pr_err("lge_smpl_count_data is NULL\n");
 		return -1;
 	}
-	if ((warm_reset == 0)
-		&& ((boot_cause &= PWR_ON_EVENT_SMPL)
-			|| (poff_sts == PWR_OFF_EVENT_S2_RESET)
-			|| (poff_sts == PWR_OFF_EVENT_S3_RESET))) {
+
+#if defined(CONFIG_LGE_ONE_BINARY_SKU)
+	if ((lge_get_laop_operator() == OP_VZW_POSTPAID)
+		||(lge_get_laop_operator() == OP_VZW_PREPAID)) {
+		smpl_condition = ((warm_reset == 0)
+					&& ((boot_cause &= PWR_ON_EVENT_SMPL)
+					|| (poff_sts == PWR_OFF_EVENT_S2_RESET)
+					|| (poff_sts == PWR_OFF_EVENT_S3_RESET)));
+	}
+	else
+#endif
+	{
+		smpl_condition = ((warm_reset == 0)
+#if defined(CONFIG_MACH_SDM845_JUDY_VZW)
+					&& ((boot_cause &= PWR_ON_EVENT_SMPL)
+					|| (poff_sts == PWR_OFF_EVENT_S2_RESET)
+					|| (poff_sts == PWR_OFF_EVENT_S3_RESET)));
+#else
+					&& (boot_cause &= PWR_ON_EVENT_SMPL));
+#endif
+	}
+
+	if (smpl_condition) {
 		pr_info("[SMPL_CNT] ===> is smpl boot\n");
 		data->smpl_boot = 1;
-	} else {
+	}
+	else {
 		pr_info("[SMPL_CNT] ===> not smpl boot!!!!!\n");
 		data->smpl_boot = 0;
 	}

@@ -12,3 +12,20 @@
 
 #include "../sdm845-judy_common/sdm845-judy_common-storage.dtsi"
 
+&firmware {
+	android {
+		compatible = "android,firmware";
+		fstab {
+			compatible = "android,fstab";
+			OP {
+				compatible = "android,op";
+				dev = "/dev/block/platform/soc/1d84000.ufshc/by-name/OP";
+				type = "ext4";
+				mnt_point = "/oem/OP";
+				mnt_flags = "ro,noatime,nosuid,nodev,barrier=1,data=ordered,noauto_da_alloc";
+				fsmgr_flags = "wait,slotselect,avb,nofail";
+				status = "ok";
+			};
+		};
+	};
+};

@@ -299,6 +299,28 @@ static char *ffs_prepare_buffer(const char __user *buf, size_t len,
 
 
 /* Control file aka ep0 *****************************************************/
+#ifdef CONFIG_LGE_USB_GADGET
+static const char* to_string(enum usb_functionfs_event_type type) {
+	switch (type) {
+		case FUNCTIONFS_BIND:
+			return "FUNCTIONFS_BIND";
+		case FUNCTIONFS_UNBIND:
+			return "FUNCTIONFS_UNBIND";
+		case FUNCTIONFS_ENABLE:
+			return "FUNCTIONFS_ENABLE";
+		case FUNCTIONFS_DISABLE:
+			return "FUNCTIONFS_DISABLE";
+		case FUNCTIONFS_SETUP:
+			return "FUNCTIONFS_SETUP";
+		case FUNCTIONFS_SUSPEND:
+			return "FUNCTIONFS_SUSPEND";
+		case FUNCTIONFS_RESUME:
+			return "FUNCTIONFS_RESUME";
+		default:
+			return "not support type";
+	}
+}
+#endif
 
 static void ffs_ep0_complete(struct usb_ep *ep, struct usb_request *req)
 {
@@ -1351,11 +1373,12 @@ static ssize_t ffs_epfile_write_iter(struct kiocb *kiocb, struct iov_iter *from)
 	ffs_log("enter");
 
 	if (!is_sync_kiocb(kiocb)) {
-		p = kmalloc(sizeof(io_data), GFP_KERNEL);
+		p = kzalloc(sizeof(io_data), GFP_KERNEL);
 		if (unlikely(!p))
 			return -ENOMEM;
 		p->aio = true;
 	} else {
+		memset(p, 0, sizeof(*p));
 		p->aio = false;
 	}
 
@@ -1392,11 +1415,12 @@ static ssize_t ffs_epfile_read_iter(struct kiocb *kiocb, struct iov_iter *to)
 	ffs_log("enter");
 
 	if (!is_sync_kiocb(kiocb)) {
-		p = kmalloc(sizeof(io_data), GFP_KERNEL);
+		p = kzalloc(sizeof(io_data), GFP_KERNEL);
 		if (unlikely(!p))
 			return -ENOMEM;
 		p->aio = true;
 	} else {
+		memset(p, 0, sizeof(*p));
 		p->aio = false;
 	}
 
@@ -1862,6 +1886,7 @@ MODULE_ALIAS_FS("functionfs");
 static int functionfs_init(void)
 {
 	int ret;
+
 
 	ENTER();
 
@@ -3135,6 +3160,9 @@ static void ffs_event_add(struct ffs_data *ffs,
 			  enum usb_functionfs_event_type type)
 {
 	unsigned long flags;
+#ifdef CONFIG_LGE_USB_GADGET
+	pr_info("%s: %s: %s\n", ffs->dev_name, __func__, to_string(type));
+#endif
 	spin_lock_irqsave(&ffs->ev.waitq.lock, flags);
 	__ffs_event_add(ffs, type);
 	spin_unlock_irqrestore(&ffs->ev.waitq.lock, flags);
@@ -3609,7 +3637,14 @@ static int _ffs_func_bind(struct usb_configuration *c,
 		c->cdev->use_os_string ? ffs->interfaces_count : 0;
 
 	/* And we're done */
-	ffs_event_add(ffs, FUNCTIONFS_BIND);
+#ifdef CONFIG_LGE_USB_GADGET_MULTI_CONFIG
+		if (c->bConfigurationValue == 1)
+			ffs_event_add(ffs, FUNCTIONFS_BIND);
+		else
+			pr_info("%s: skip FUNCTIONFS_BIND event\n", ffs->dev_name);
+#else
+		ffs_event_add(ffs, FUNCTIONFS_BIND);
+#endif
 
 	ffs_log("exit: state %d setup_state %d flag %lu", ffs->state,
 		ffs->setup_state, ffs->flags);
@@ -3628,6 +3663,7 @@ static int ffs_func_bind(struct usb_configuration *c,
 	struct f_fs_opts *ffs_opts = ffs_do_functionfs_bind(f, c);
 	struct ffs_function *func = ffs_func_from_usb(f);
 	int ret;
+
 
 	ffs_log("enter");
 
@@ -3668,6 +3704,9 @@ static int ffs_func_set_alt(struct usb_function *f,
 	ffs_log("enter");
 
 	if (alt != (unsigned)-1) {
+#ifdef CONFIG_LGE_USB_GADGET
+	pr_debug("%s: %s(alt=%d)\n", ffs->dev_name, __func__, alt);
+#endif
 		intf = ffs_func_revmap_intf(func, interface);
 		if (unlikely(intf < 0))
 			return intf;

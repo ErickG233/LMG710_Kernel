@@ -4223,7 +4223,8 @@ static inline int nf_ingress(struct sk_buff *skb, struct packet_type **pt_prev,
 int (*gsb_nw_stack_recv)(struct sk_buff *skb) __rcu __read_mostly;
 EXPORT_SYMBOL(gsb_nw_stack_recv);
 
-int (*athrs_fast_nat_recv)(struct sk_buff *skb) __rcu __read_mostly;
+int (*athrs_fast_nat_recv)(struct sk_buff *skb,
+			   struct packet_type *pt_temp) __rcu __read_mostly;
 EXPORT_SYMBOL(athrs_fast_nat_recv);
 
 int (*embms_tm_multicast_recv)(struct sk_buff *skb) __rcu __read_mostly;
@@ -4238,7 +4239,7 @@ static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
 	int ret = NET_RX_DROP;
 	__be16 type;
 	int (*gsb_ns_recv)(struct sk_buff *skb);
-	int (*fast_recv)(struct sk_buff *skb);
+	int (*fast_recv)(struct sk_buff *skb, struct packet_type *pt_temp);
 	int (*embms_recv)(struct sk_buff *skb);
 
 	net_timestamp_check(!netdev_tstamp_prequeue, skb);
@@ -4308,7 +4309,7 @@ skip_taps:
 	}
 	fast_recv = rcu_dereference(athrs_fast_nat_recv);
 	if (fast_recv) {
-		if (fast_recv(skb)) {
+		if (fast_recv(skb, pt_prev)) {
 			ret = NET_RX_SUCCESS;
 			goto out;
 		}
@@ -4931,7 +4932,6 @@ static struct sk_buff *napi_frags_skb(struct napi_struct *napi)
 	skb_reset_mac_header(skb);
 	skb_gro_reset_offset(skb);
 
-	eth = skb_gro_header_fast(skb, 0);
 	if (unlikely(skb_gro_header_hard(skb, hlen))) {
 		eth = skb_gro_header_slow(skb, hlen, 0);
 		if (unlikely(!eth)) {
@@ -4941,6 +4941,7 @@ static struct sk_buff *napi_frags_skb(struct napi_struct *napi)
 			return NULL;
 		}
 	} else {
+		eth = (const struct ethhdr *)skb->data;
 		gro_pull_from_frag0(skb, hlen);
 		NAPI_GRO_CB(skb)->frag0 += hlen;
 		NAPI_GRO_CB(skb)->frag0_len -= hlen;
@@ -5203,7 +5204,10 @@ bool sk_busy_loop(struct sock *sk, int nonblock)
 		goto out;
 
 	/* Note: ndo_busy_poll method is optional in linux-4.5 */
-	busy_poll = napi->dev->netdev_ops->ndo_busy_poll;
+	if (napi->dev->netdev_ops)
+		busy_poll = napi->dev->netdev_ops->ndo_busy_poll;
+	else
+		busy_poll = NULL;
 
 	do {
 		rc = 0;
@@ -6931,7 +6935,8 @@ static int dev_new_index(struct net *net)
 {
 	int ifindex = net->ifindex;
 	for (;;) {
-		if (++ifindex <= 0)
+		// LGE_CHANGE, add reset iface index condition when exceeded 1000 over(CN#04056525), 2019-06-26, ella.hwang@lge.com
+		if (++ifindex <= 0 || ifindex >= 1000)
 			ifindex = 1;
 		if (!__dev_get_by_index(net, ifindex))
 			return net->ifindex = ifindex;
@@ -8441,6 +8446,8 @@ static void __net_exit default_device_exit(struct net *net)
 
 		/* Push remaining network devices to init_net */
 		snprintf(fb_name, IFNAMSIZ, "dev%d", dev->ifindex);
+		if (__dev_get_by_name(&init_net, fb_name))
+			snprintf(fb_name, IFNAMSIZ, "dev%%d");
 		err = dev_change_net_namespace(dev, &init_net, fb_name);
 		if (err) {
 			pr_emerg("%s: failed to move %s to init_net: %d\n",

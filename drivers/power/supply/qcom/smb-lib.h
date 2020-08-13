@@ -72,6 +72,8 @@ enum print_reason {
 #define HVDCP2_ICL_VOTER		"HVDCP2_ICL_VOTER"
 #define OV_VOTER			"OV_VOTER"
 #define FG_ESR_VOTER			"FG_ESR_VOTER"
+#define FCC_STEPPER_VOTER		"FCC_STEPPER_VOTER"
+#define PD_NOT_SUPPORTED_VOTER		"PD_NOT_SUPPORTED_VOTER"
 
 #define VCONN_MAX_ATTEMPTS	3
 #define OTG_MAX_ATTEMPTS	3
@@ -356,6 +358,7 @@ struct smb_charger {
 	bool			is_audio_adapter;
 	bool			disable_stat_sw_override;
 	bool			in_chg_lock;
+	bool			fcc_stepper_enable;
 
 	/* workaround flag */
 	u32			wa_flags;
@@ -367,6 +370,11 @@ struct smb_charger {
 	int			qc2_max_pulses;
 	bool			non_compliant_chg_detected;
 	bool			fake_usb_insertion;
+#ifdef CONFIG_LGE_USB_MOISTURE_DETECTION
+	int			moisture_ux;
+	int			moisture_usb;
+#endif
+	bool			reddragon_ipc_wa;
 
 	/* extcon for VBUS / ID notification to USB for uUSB */
 	struct extcon_dev	*extcon;
@@ -583,6 +591,8 @@ bool workaround_avoiding_mbg_fault_uart(bool enable);
 bool workaround_avoiding_mbg_fault_usbid(bool enable);
 void workaround_check_unknown_cable(struct smb_charger *chg);
 void workaround_check_unknown_cable_clear(struct smb_charger *chg);
+void workaround_fake_pd_hard_reset_trigger(void);
+bool workaround_fake_pd_hard_reset_show(void);
 
 // Override functions implemented in smb-lib.c
 irqreturn_t override_handle_chg_state_change(int irq, void *arg);

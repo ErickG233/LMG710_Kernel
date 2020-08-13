@@ -1,10 +1,10 @@
 #include "lgmd18.h"
 
-#include <linux/usb/fusb252.h>
+#include <linux/usb/lge_sbu_switch.h>
 
 struct lgmd18_judy {
-	struct fusb252_desc		fusb252_desc;
-	struct fusb252_instance		*fusb252_inst;
+	struct lge_sbu_switch_desc		lge_sbu_switch_desc;
+	struct lge_sbu_switch_instance		*lge_sbu_switch_inst;
 };
 
 static const char * const iio_ev_dir_text[] = {
@@ -22,7 +22,7 @@ static int lgmd18_read_raw(struct iio_dev *indio_dev,
 	struct lgmd18_judy *judy = lgmd18->private_data;
 	struct lgmd18_adc *adc = &lgmd18->adc_chans[chan->channel];
 	struct qpnp_vadc_result result;
-	unsigned long fusb252_flag;
+	unsigned long lge_sbu_switch_flag;
 	int ret;
 
 
@@ -39,21 +39,21 @@ static int lgmd18_read_raw(struct iio_dev *indio_dev,
 			qpnp_adc_tm_disable_chan_meas(lgmd18->adc_tm_chip,
 						      &adc->param);
 
-		fusb252_flag = fusb252_get_current_flag(judy->fusb252_inst);
+		lge_sbu_switch_flag = lge_sbu_switch_get_current_flag(judy->lge_sbu_switch_inst);
 
-		if (fusb252_flag != FUSB252_MODE_SBU_USBID) {
-			if (fusb252_flag == FUSB252_FLAG_SBU_DISABLE) {
-				fusb252_get(judy->fusb252_inst,
-					    FUSB252_FLAG_SBU_MD);
-				fusb252_put(judy->fusb252_inst,
-					    FUSB252_FLAG_SBU_DISABLE);
-			} else if (fusb252_flag != FUSB252_FLAG_SBU_MD_ING) {
-				fusb252_get(judy->fusb252_inst,
-					    FUSB252_FLAG_SBU_MD_ING);
+		if (lge_sbu_switch_flag != LGE_SBU_SWITCH_MODE_SBU_USBID) {
+			if (lge_sbu_switch_flag == LGE_SBU_SWITCH_FLAG_SBU_DISABLE) {
+				lge_sbu_switch_get(judy->lge_sbu_switch_inst,
+					    LGE_SBU_SWITCH_FLAG_SBU_MD);
+				lge_sbu_switch_put(judy->lge_sbu_switch_inst,
+					    LGE_SBU_SWITCH_FLAG_SBU_DISABLE);
+			} else if (lge_sbu_switch_flag != LGE_SBU_SWITCH_FLAG_SBU_MD_ING) {
+				lge_sbu_switch_get(judy->lge_sbu_switch_inst,
+					    LGE_SBU_SWITCH_FLAG_SBU_MD_ING);
 			}
 		}
 
-		if (fusb252_get_ovp_state(judy->fusb252_inst) > 0) {
+		if (lge_sbu_switch_get_ovp_state(judy->lge_sbu_switch_inst) > 0) {
 			switch (lgmd18->adc_chans[0].bias) {
 			case PIN_CONFIG_BIAS_PULL_UP:
 				result.physical = lgmd18->adc_chans[0].blue_thr_uv;
@@ -70,15 +70,15 @@ static int lgmd18_read_raw(struct iio_dev *indio_dev,
 				       &result);
 		}
 
-		if (fusb252_flag != FUSB252_MODE_SBU_USBID) {
-			if (fusb252_flag == FUSB252_FLAG_SBU_DISABLE) {
-				fusb252_get(judy->fusb252_inst,
-					    FUSB252_FLAG_SBU_DISABLE);
-				fusb252_put(judy->fusb252_inst,
-					    FUSB252_FLAG_SBU_MD);
-			} else if (fusb252_flag != FUSB252_FLAG_SBU_MD_ING) {
-				fusb252_put(judy->fusb252_inst,
-					    FUSB252_FLAG_SBU_MD_ING);
+		if (lge_sbu_switch_flag != LGE_SBU_SWITCH_MODE_SBU_USBID) {
+			if (lge_sbu_switch_flag == LGE_SBU_SWITCH_FLAG_SBU_DISABLE) {
+				lge_sbu_switch_get(judy->lge_sbu_switch_inst,
+					    LGE_SBU_SWITCH_FLAG_SBU_DISABLE);
+				lge_sbu_switch_put(judy->lge_sbu_switch_inst,
+					    LGE_SBU_SWITCH_FLAG_SBU_MD);
+			} else if (lge_sbu_switch_flag != LGE_SBU_SWITCH_FLAG_SBU_MD_ING) {
+				lge_sbu_switch_put(judy->lge_sbu_switch_inst,
+					    LGE_SBU_SWITCH_FLAG_SBU_MD_ING);
 			}
 		}
 
@@ -170,33 +170,33 @@ static int lgmd18_write_event_config(struct iio_dev *indio_dev,
 
 		if (!state) {
 			if (dir == IIO_EV_DIR_RISING)
-				fusb252_get(judy->fusb252_inst,
-					    FUSB252_FLAG_SBU_DISABLE);
+				lge_sbu_switch_get(judy->lge_sbu_switch_inst,
+					    LGE_SBU_SWITCH_FLAG_SBU_DISABLE);
 			else
-				fusb252_put(judy->fusb252_inst,
-					    FUSB252_FLAG_SBU_DISABLE);
+				lge_sbu_switch_put(judy->lge_sbu_switch_inst,
+					    LGE_SBU_SWITCH_FLAG_SBU_DISABLE);
 			break;
 		}
 
 		switch (dir) {
 		case IIO_EV_DIR_EITHER:
-			fusb252_get(judy->fusb252_inst,
-				    FUSB252_FLAG_SBU_DISABLE);
+			lge_sbu_switch_get(judy->lge_sbu_switch_inst,
+				    LGE_SBU_SWITCH_FLAG_SBU_DISABLE);
 
 			alarm_start_relative(&adc->timer,
 					     ms_to_ktime(adc->timer_ms));
 			break;
 		case IIO_EV_DIR_RISING:
-			fusb252_get(judy->fusb252_inst,
-				    FUSB252_FLAG_SBU_DISABLE);
+			lge_sbu_switch_get(judy->lge_sbu_switch_inst,
+				    LGE_SBU_SWITCH_FLAG_SBU_DISABLE);
 
 			adc->param.state_request = ADC_TM_HIGH_THR_ENABLE;
 			alarm_start_relative(&adc->timer,
 					     ms_to_ktime(adc->timer_ms));
 			break;
 		case IIO_EV_DIR_FALLING:
-			fusb252_put(judy->fusb252_inst,
-				    FUSB252_FLAG_SBU_DISABLE);
+			lge_sbu_switch_put(judy->lge_sbu_switch_inst,
+				    LGE_SBU_SWITCH_FLAG_SBU_DISABLE);
 
 			adc->param.state_request = ADC_TM_LOW_THR_ENABLE;
 			qpnp_adc_tm_channel_measure(lgmd18->adc_tm_chip,
@@ -484,9 +484,9 @@ static int lgmd18_probe_md(struct lgmd18 *lgmd18)
 	struct lgmd18_judy *judy = lgmd18->private_data;
 	int ovp;
 
-	ovp = fusb252_get_ovp_state(judy->fusb252_inst);
+	ovp = lge_sbu_switch_get_ovp_state(judy->lge_sbu_switch_inst);
 	if (ovp > 0) {
-		dev_info(lgmd18->dev, "OVP detected on FUSB252.\n");
+		dev_info(lgmd18->dev, "OVP detected on lge_sbu_switch.\n");
 		return true;
 	}
 
@@ -521,21 +521,21 @@ int lgmd18_init(struct lgmd18 *lgmd18)
 	if (!judy)
 		return -ENOMEM;
 
-	judy->fusb252_desc.flags = FUSB252_FLAG_SBU_DISABLE |
-		FUSB252_FLAG_SBU_MD | FUSB252_FLAG_SBU_MD_ING |
-		FUSB252_FLAG_EDGE_MD | FUSB252_FLAG_SBU_USBID |
-		FUSB252_FLAG_EDGE_MD_ING;
-	judy->fusb252_inst = devm_fusb252_instance_register(lgmd18->dev,
-				    &judy->fusb252_desc);
-	if (!judy->fusb252_inst) {
-		dev_dbg(lgmd18->dev, "Could not get FUSB252, deferring probe\n");
+	judy->lge_sbu_switch_desc.flags = LGE_SBU_SWITCH_FLAG_SBU_DISABLE |
+		LGE_SBU_SWITCH_FLAG_SBU_MD | LGE_SBU_SWITCH_FLAG_SBU_MD_ING |
+		LGE_SBU_SWITCH_FLAG_EDGE_MD | LGE_SBU_SWITCH_FLAG_SBU_USBID |
+		LGE_SBU_SWITCH_FLAG_EDGE_MD_ING;
+	judy->lge_sbu_switch_inst = devm_lge_sbu_switch_instance_register(lgmd18->dev,
+				    &judy->lge_sbu_switch_desc);
+	if (!judy->lge_sbu_switch_inst) {
+		dev_dbg(lgmd18->dev, "Could not get lge_sbu_switch, deferring probe\n");
 		return -EPROBE_DEFER;
 	}
 
 	if (lgmd18->num_channels > 1)
-		fusb252_get(judy->fusb252_inst, FUSB252_FLAG_EDGE_MD_ING);
+		lge_sbu_switch_get(judy->lge_sbu_switch_inst, LGE_SBU_SWITCH_FLAG_EDGE_MD_ING);
 	else
-		fusb252_get(judy->fusb252_inst, FUSB252_FLAG_SBU_USBID);
+		lge_sbu_switch_get(judy->lge_sbu_switch_inst, LGE_SBU_SWITCH_FLAG_SBU_USBID);
 
 	for (i = 0; i < lgmd18->num_channels; i++) {
 		INIT_WORK(&lgmd18->adc_chans[i].timer_work,

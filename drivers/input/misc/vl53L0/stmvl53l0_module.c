@@ -2367,6 +2367,8 @@ XtalkCal :
 	pr_err("OffsetCalibration Step 7. set Xtalk Calibration\n");
 #ifdef CONFIG_MACH_SDM845_JUDYLN
 	XTalkCompMegaCps = 16;
+#elif defined(CONFIG_MACH_SDM845_CAYMANSLM)
+    XTalkCompMegaCps = 16;
 #else
 	XTalkCompMegaCps = 24;
 #endif
@@ -2639,6 +2641,8 @@ static int stmvl53l0_init_client(struct stmvl53l0_data *data)
 	vl53l0_dbgmsg("stmvl53l0_init_client Step 7. XtalkCalibration\n");
 #ifdef CONFIG_MACH_SDM845_JUDYLN
 	XTalkCompMegaCps = 16;
+#elif defined(CONFIG_MACH_SDM845_CAYMANSLM)
+    XTalkCompMegaCps = 16;
 #else
 	XTalkCompMegaCps = 24;
 #endif
@@ -2904,6 +2908,14 @@ static int stmvl53l0_start(struct stmvl53l0_data *data, uint8_t scaling,
 
 	/* init */
 	rc = stmvl53l0_init_client(data);
+
+	/* LGE_CHANGE_S, Added retry sequence for LDAF init fail by i2c timeout, 2020-05-14, dongsu.bag@lge.com */
+	if(rc == -ETIMEDOUT) {
+		rc = stmvl53l0_init_client(data);
+		vl53l0_errmsg("%d, retry init result: rc %d\n", __LINE__, rc);
+	}
+	/* LGE_CHANGE_E, Added retry sequence for LDAF init fail by i2c timeout, 2020-05-14, dongsu.bag@lge.com */
+
 	if (rc) {
 		vl53l0_errmsg("%d, error rc %d\n", __LINE__, rc);
 		pmodule_func_tbl->power_down(/*data->client_object*/);

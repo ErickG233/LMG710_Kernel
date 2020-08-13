@@ -415,6 +415,7 @@ static int read_pt_frame(struct device *dev, struct sw49408_data *d, u32 type, u
 }
 
 
+static u16 buf[ROW_SIZE][COL_SIZE];
 static int prd_open_short_test(struct device *dev)
 {
 	struct sw49408_data *d = to_sw49408_data(dev);
@@ -424,7 +425,6 @@ static int prd_open_short_test(struct device *dev)
 	u32 open_result = 0;
 	u32 short_result = 0;
 	u32 openshort_all_result = 0;
-	u16 buf[ROW_SIZE][COL_SIZE];
 	int i = 0;
 	int j = 0;
 
@@ -495,6 +495,7 @@ static int prd_open_short_test(struct device *dev)
 	write_file(dev, W_Buf, TIME_INFO_SKIP);
 
 	return openshort_all_result;
+
 }
 
 static int prd_print_rawdata(struct device *dev, char *buf, u32 type,

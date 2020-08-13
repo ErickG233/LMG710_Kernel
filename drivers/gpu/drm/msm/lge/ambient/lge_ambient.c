@@ -11,6 +11,52 @@
 
 #define SANITIZE(x) do { (x) = ((x)<0)?0:(x); } while(0)
 
+enum {
+	PA_NOT_DEFINED = 0,
+	PA_PARTIAL= 1, /* string : partial */
+	PA_FULL = 2, /* string : full-size */
+	PA_SEMI_PARTIAL = 4, /* string : semi-partial */
+	PA_MAX,
+};
+
+static void set_interface_data(struct dsi_panel *panel, int *data)
+{
+	panel->lge.aod_interface = ((*(data) << 8) | (*(data + 1) << 4) | *(data + 2));
+	pr_info("mode0=%d, mode1=%d, mode2=%d, aod_interface=0x%03x\n",
+					*data, *(data + 1), *(data + 2),
+					panel->lge.aod_interface);
+}
+
+int lge_ambient_set_interface_data(struct dsi_panel *panel)
+{
+	int i;
+	int interface_data[3] = {PA_FULL, PA_FULL, PA_FULL};
+
+	if (!panel) {
+		pr_err("panel is null\n");
+		return -EINVAL;
+	}
+
+	for (i = 0; i < 3; i++) {
+		if (!panel->lge.aod_interface_type[i]) {
+			pr_err("not defined from idx=%d\n", i);
+			break;
+		}
+
+		if(!strncmp(panel->lge.aod_interface_type[i], "partial", 4)) {
+			interface_data[i] = PA_PARTIAL;
+		} else if(!strncmp(panel->lge.aod_interface_type[i], "semi", 4)) {
+			interface_data[i] = PA_SEMI_PARTIAL;
+		} else {
+			interface_data[i] = PA_FULL;
+		}
+	}
+
+	set_interface_data(panel, &(interface_data[0]));
+	return 0;
+}
+EXPORT_SYMBOL(lge_ambient_set_interface_data);
+
 static ssize_t area_get(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {

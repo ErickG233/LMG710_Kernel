@@ -273,23 +273,19 @@ int cam_sync_signal(int32_t sync_obj, uint32_t status)
 		kfree(parent_info);
 	}
 
+	/* LGE_CHANGE, CST, change log comment for fence error */
 	if (status == CAM_SYNC_STATE_SIGNALED_ERROR)
-		CAM_ERR(CAM_SYNC, "fence error maybe occurs..");
+		CAM_ERR(CAM_SYNC, "error signaled state sync_obj %d %s", sync_obj, row->name);
 
 	return 0;
 }
 
 int cam_sync_merge(int32_t *sync_obj, uint32_t num_objs, int32_t *merged_obj)
 {
-/* LGE_CHANGE_S, CN#03621890 Fix PostCS2 deadlock 2018-08-17 sungmin.cho@lge.com */
-#if 1
-	int rc = 0;
-#else
-	int rc = 0, i = 0;
-#endif
-/* LGE_CHANGE_E, CN#03621890 Fix PostCS2 deadlock 2018-08-17 sungmin.cho@lge.com */
+	int rc;
 	long idx = 0;
 	bool bit;
+	int i = 0;
 
 	if (!sync_obj || !merged_obj) {
 		CAM_ERR(CAM_SYNC, "Invalid pointer(s)");
@@ -306,27 +302,19 @@ int cam_sync_merge(int32_t *sync_obj, uint32_t num_objs, int32_t *merged_obj)
 		CAM_ERR(CAM_SYNC, "The obj list has duplicate fence");
 		return -EINVAL;
 	}
-/* LGE_CHANGE_S, CN#03621890 Fix PostCS2 deadlock 2018-08-17 sungmin.cho@lge.com */
-#if 0
-	for (i = 0; i < num_objs; i++) {
-		spin_lock_bh(&sync_dev->row_spinlocks[sync_obj[i]]);
-	}
-#endif
-/* LGE_CHANGE_E, CN#03621890 Fix PostCS2 deadlock 2018-08-17 sungmin.cho@lge.com */
 
+	for (i = 0; i < num_objs; i++) {
+		rc = cam_sync_check_valid(sync_obj[i]);
+		if (rc) {
+			CAM_ERR(CAM_SYNC, "Sync_obj[%d] %d valid check fail",
+				i, sync_obj[i]);
+			return rc;
+		}
+	}
 	do {
 		idx = find_first_zero_bit(sync_dev->bitmap, CAM_SYNC_MAX_OBJS);
-		if (idx >= CAM_SYNC_MAX_OBJS) {
-/* LGE_CHANGE_S, CN#03621890 Fix PostCS2 deadlock 2018-08-17 sungmin.cho@lge.com */
-#if 1
+		if (idx >= CAM_SYNC_MAX_OBJS)
 			return -ENOMEM;
-#else
-			rc = -ENOMEM;
-			goto failure;
-#endif
-/* LGE_CHANGE_E, CN#03621890 Fix PostCS2 deadlock 2018-08-17 sungmin.cho@lge.com */
-
-		}
 		bit = test_and_set_bit(idx, sync_dev->bitmap);
 	} while (bit);
 
@@ -339,30 +327,13 @@ int cam_sync_merge(int32_t *sync_obj, uint32_t num_objs, int32_t *merged_obj)
 			idx);
 		clear_bit(idx, sync_dev->bitmap);
 		spin_unlock_bh(&sync_dev->row_spinlocks[idx]);
-/* LGE_CHANGE_S, CN#03621890 Fix PostCS2 deadlock 2018-08-17 sungmin.cho@lge.com */
-#if 1
 		return -EINVAL;
-#else
-		goto failure;
-#endif
-/* LGE_CHANGE_E, CN#03621890 Fix PostCS2 deadlock 2018-08-17 sungmin.cho@lge.com */
 	}
 	CAM_DBG(CAM_SYNC, "Init row at idx:%ld to merge objects", idx);
 	*merged_obj = idx;
 	spin_unlock_bh(&sync_dev->row_spinlocks[idx]);
 
-/* LGE_CHANGE_S, CN#03621890 Fix PostCS2 deadlock 2018-08-17 sungmin.cho@lge.com */
-#if 1
 	return 0;
-#else
-failure:
-	for (i = 0; i < num_objs; i++) {
-		spin_unlock_bh(&sync_dev->row_spinlocks[sync_obj[i]]);
-	}
-
-	return rc;
-#endif
-/* LGE_CHANGE_E, CN#03621890 Fix PostCS2 deadlock 2018-08-17 sungmin.cho@lge.com */
 }
 
 int cam_sync_get_obj_ref(int32_t sync_obj)
@@ -378,9 +349,9 @@ int cam_sync_get_obj_ref(int32_t sync_obj)
 
 	if (row->state != CAM_SYNC_STATE_ACTIVE) {
 		spin_unlock(&sync_dev->row_spinlocks[sync_obj]);
-		CAM_DBG(CAM_SYNC,
-			"Error: accessing an uninitialized sync obj = %d",
-			sync_obj);
+		CAM_INFO_RATE_LIMIT(CAM_SYNC,
+			"Error: accessing an uninitialized sync obj = %d row %s",
+			sync_obj, row->name);
 		return -EINVAL;
 	}
 
@@ -411,6 +382,29 @@ int cam_sync_destroy(int32_t sync_obj)
 	return cam_sync_deinit_object(sync_dev->sync_table, sync_obj);
 }
 
+int cam_sync_check_valid(int32_t sync_obj)
+{
+	struct sync_table_row *row = NULL;
+
+	if (sync_obj >= CAM_SYNC_MAX_OBJS || sync_obj <= 0)
+		return -EINVAL;
+
+	row = sync_dev->sync_table + sync_obj;
+
+	if (!test_bit(sync_obj, sync_dev->bitmap)) {
+		CAM_ERR(CAM_SYNC, "Error: Released sync obj received %d",
+			sync_obj);
+		return -EINVAL;
+	}
+
+	if (row->state == CAM_SYNC_STATE_INVALID) {
+		CAM_ERR(CAM_SYNC,
+			"Error: accessing an uninitialized sync obj = %d",
+			sync_obj);
+		return -EINVAL;
+	}
+	return 0;
+}
 int cam_sync_wait(int32_t sync_obj, uint64_t timeout_ms)
 {
 	unsigned long timeleft;
@@ -470,7 +464,7 @@ static int cam_sync_handle_create(struct cam_private_ioctl_arg *k_ioctl)
 		return -EINVAL;
 
 	if (copy_from_user(&sync_create,
-		(void *)k_ioctl->ioctl_ptr,
+		u64_to_user_ptr(k_ioctl->ioctl_ptr),
 		k_ioctl->size))
 		return -EFAULT;
 
@@ -478,7 +472,8 @@ static int cam_sync_handle_create(struct cam_private_ioctl_arg *k_ioctl)
 		sync_create.name);
 
 	if (!result)
-		if (copy_to_user((void *)k_ioctl->ioctl_ptr,
+		if (copy_to_user(
+			u64_to_user_ptr(k_ioctl->ioctl_ptr),
 			&sync_create,
 			k_ioctl->size))
 			return -EFAULT;
@@ -488,6 +483,7 @@ static int cam_sync_handle_create(struct cam_private_ioctl_arg *k_ioctl)
 
 static int cam_sync_handle_signal(struct cam_private_ioctl_arg *k_ioctl)
 {
+	int rc = 0;
 	struct cam_sync_signal sync_signal;
 
 	if (k_ioctl->size != sizeof(struct cam_sync_signal))
@@ -497,12 +493,19 @@ static int cam_sync_handle_signal(struct cam_private_ioctl_arg *k_ioctl)
 		return -EINVAL;
 
 	if (copy_from_user(&sync_signal,
-		(void *)k_ioctl->ioctl_ptr,
+		u64_to_user_ptr(k_ioctl->ioctl_ptr),
 		k_ioctl->size))
 		return -EFAULT;
 
 	/* need to get ref for UMD signaled fences */
-	cam_sync_get_obj_ref(sync_signal.sync_obj);
+	rc = cam_sync_get_obj_ref(sync_signal.sync_obj);
+	if (rc) {
+		CAM_DBG(CAM_SYNC,
+			"Error: cannot signal an uninitialized sync obj = %d",
+			sync_signal.sync_obj);
+		return rc;
+	}
+
 	return cam_sync_signal(sync_signal.sync_obj,
 		sync_signal.sync_state);
 }
@@ -522,7 +525,7 @@ static int cam_sync_handle_merge(struct cam_private_ioctl_arg *k_ioctl)
 		return -EINVAL;
 
 	if (copy_from_user(&sync_merge,
-		(void *)k_ioctl->ioctl_ptr,
+		u64_to_user_ptr(k_ioctl->ioctl_ptr),
 		k_ioctl->size))
 		return -EFAULT;
 
@@ -536,8 +539,8 @@ static int cam_sync_handle_merge(struct cam_private_ioctl_arg *k_ioctl)
 		return -ENOMEM;
 
 	if (copy_from_user(sync_objs,
-	(void *)sync_merge.sync_objs,
-	sizeof(uint32_t) * sync_merge.num_objs)) {
+		u64_to_user_ptr(sync_merge.sync_objs),
+		sizeof(uint32_t) * sync_merge.num_objs)) {
 		kfree(sync_objs);
 		return -EFAULT;
 	}
@@ -549,7 +552,8 @@ static int cam_sync_handle_merge(struct cam_private_ioctl_arg *k_ioctl)
 		&sync_merge.merged);
 
 	if (!result)
-		if (copy_to_user((void *)k_ioctl->ioctl_ptr,
+		if (copy_to_user(
+			u64_to_user_ptr(k_ioctl->ioctl_ptr),
 			&sync_merge,
 			k_ioctl->size)) {
 			kfree(sync_objs);
@@ -572,7 +576,7 @@ static int cam_sync_handle_wait(struct cam_private_ioctl_arg *k_ioctl)
 		return -EINVAL;
 
 	if (copy_from_user(&sync_wait,
-		(void *)k_ioctl->ioctl_ptr,
+		u64_to_user_ptr(k_ioctl->ioctl_ptr),
 		k_ioctl->size))
 		return -EFAULT;
 
@@ -593,7 +597,7 @@ static int cam_sync_handle_destroy(struct cam_private_ioctl_arg *k_ioctl)
 		return -EINVAL;
 
 	if (copy_from_user(&sync_create,
-		(void *)k_ioctl->ioctl_ptr,
+		u64_to_user_ptr(k_ioctl->ioctl_ptr),
 		k_ioctl->size))
 		return -EFAULT;
 
@@ -617,7 +621,7 @@ static int cam_sync_handle_register_user_payload(
 		return -EINVAL;
 
 	if (copy_from_user(&userpayload_info,
-		(void *)k_ioctl->ioctl_ptr,
+		u64_to_user_ptr(k_ioctl->ioctl_ptr),
 		k_ioctl->size))
 		return -EFAULT;
 
@@ -698,7 +702,7 @@ static int cam_sync_handle_deregister_user_payload(
 	}
 
 	if (copy_from_user(&userpayload_info,
-		(void *)k_ioctl->ioctl_ptr,
+		u64_to_user_ptr(k_ioctl->ioctl_ptr),
 		k_ioctl->size))
 		return -EFAULT;
 

@@ -332,6 +332,11 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(parallel_fcc_max),
 	POWER_SUPPLY_ATTR(min_icl),
 	POWER_SUPPLY_ATTR(moisture_detected),
+#ifdef CONFIG_LGE_USB_MOISTURE_DETECTION
+	POWER_SUPPLY_ATTR(moisture_en),
+	POWER_SUPPLY_ATTR(moisture_ux),
+	POWER_SUPPLY_ATTR(moisture_usb),
+#endif
 	POWER_SUPPLY_ATTR(batt_profile_version),
 	POWER_SUPPLY_ATTR(batt_full_current),
 	POWER_SUPPLY_ATTR(recharge_soc),
@@ -346,9 +351,11 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(esr_actual),
 	POWER_SUPPLY_ATTR(esr_nominal),
 	POWER_SUPPLY_ATTR(soh),
-/* to do fix */
-/*	POWER_SUPPLY_ATTR(qc_opti_disable),
-	POWER_SUPPLY_ATTR(fcc_stepper_enable), */
+	POWER_SUPPLY_ATTR(qc_opti_disable),
+	POWER_SUPPLY_ATTR(fcc_stepper_enable),
+	POWER_SUPPLY_ATTR(cc_soc),
+	POWER_SUPPLY_ATTR(qg_vbms_mode),
+	POWER_SUPPLY_ATTR(real_capacity),
 	/* Local extensions of type int64_t */
 	POWER_SUPPLY_ATTR(charge_counter_ext),
 	/* Properties of type `const char *' */

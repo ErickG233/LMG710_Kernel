@@ -109,7 +109,7 @@ enum fg_debug_flag {
 	FG_CAP_LEARN		= BIT(7), /* Show capacity learning */
 	FG_TTF			= BIT(8), /* Show time to full */
 #ifdef CONFIG_LGE_PM_DEBUG
-	FG_LGE			= BIT(9),
+	FG_LGE			= BIT(15),
 #endif
 };
 
@@ -300,6 +300,9 @@ struct fg_dt_props {
 	bool	use_esr_sw;
 	bool	disable_esr_pull_dn;
 	bool	disable_fg_twm;
+#ifdef CONFIG_LGE_PM
+	bool	dynamic_ki_en;
+#endif
 	int	cutoff_volt_mv;
 	int	empty_volt_mv;
 	int	vbatt_low_thr_mv;
@@ -544,6 +547,7 @@ struct fg_chip {
 	struct delayed_work	sram_dump_work;
 #ifdef CONFIG_LGE_PM
 	int			esr_flt_rt_lvl;
+	struct delayed_work	polling_voltage_gap_dwork;
 #endif
 	struct delayed_work	pl_enable_work;
 	struct work_struct	esr_filter_work;

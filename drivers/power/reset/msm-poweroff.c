@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -61,7 +61,9 @@ static bool scm_deassert_ps_hold_supported;
 static void __iomem *msm_ps_hold;
 static phys_addr_t tcsr_boot_misc_detect;
 static void scm_disable_sdi(void);
+static bool force_warm_reboot;
 #ifndef CONFIG_LGE_HANDLE_PANIC
+
 #ifdef CONFIG_QCOM_DLOAD_MODE
 /* Runtime could be only changed value once.
  * There is no API from TZ to re-enable the registers.
@@ -74,6 +76,15 @@ static const int download_mode;
 
 #else //CONFIG_LGE_HANDLE_PANIC
 static int download_mode = 0;
+#endif
+
+#ifdef CONFIG_LGE_POWEROFF_TIMEOUT
+#define LGE_REBOOT_CMD_SIZE 32
+struct lge_poweroff_timeout_struct {
+   enum reboot_mode reboot_mode;
+   char reboot_cmd[LGE_REBOOT_CMD_SIZE];
+   struct hrtimer poweroff_timer;
+};
 #endif
 
 #ifdef CONFIG_QCOM_DLOAD_MODE
@@ -368,6 +379,16 @@ static void msm_restart_prepare(const char *cmd)
 				(cmd != NULL && cmd[0] != '\0'));
 	}
 #endif
+
+	if (force_warm_reboot)
+		pr_info("Forcing a warm reset of the system\n");
+
+	/* Hard reset the PMIC unless memory contents must be maintained. */
+	if (force_warm_reboot || need_warm_reset)
+		qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
+	else
+		qpnp_pon_system_pwr_off(PON_POWER_OFF_HARD_RESET);
+
 	if (cmd != NULL) {
 		if (!strncmp(cmd, "bootloader", 10)) {
 			qpnp_pon_set_restart_reason(
@@ -741,6 +762,99 @@ static struct attribute_group reset_attr_group = {
 };
 #endif
 
+#ifdef CONFIG_LGE_POWEROFF_TIMEOUT
+static enum hrtimer_restart lge_poweroff_timeout_handler(struct hrtimer *timer)
+{
+	/* Disable interrupts first */
+	local_irq_disable();
+	smp_send_stop();
+
+	pr_emerg("poweroff timeout expired. forced power off.\n");
+
+	if (lge_get_download_mode() == true) {
+		BUG();
+	}
+	else {
+		do_msm_poweroff();
+	}
+
+	return HRTIMER_NORESTART;
+}
+
+static enum hrtimer_restart lge_reboot_timeout_handler(struct hrtimer *timer)
+{
+	struct lge_poweroff_timeout_struct *reboot_timeout;
+
+	/* Disable interrupts first */
+	local_irq_disable();
+	smp_send_stop();
+
+	reboot_timeout = container_of(timer, struct lge_poweroff_timeout_struct, poweroff_timer);
+
+	pr_emerg("reboot timeout expired. forced reboot with cmd %s.\n", reboot_timeout->reboot_cmd);
+
+	if (lge_get_download_mode() == true) {
+		BUG();
+	}
+	else {
+		do_msm_restart(reboot_timeout->reboot_mode, reboot_timeout->reboot_cmd);
+	}
+
+	return HRTIMER_NORESTART;
+}
+
+static void do_msm_poweroff_timeout(void)
+{
+	static struct lge_poweroff_timeout_struct lge_poweroff_timeout;
+	u64 timeout_ms;
+
+	if (lge_get_download_mode() == true) {
+		timeout_ms = 120*1000; // forbid false positive, for debugging
+	} else {
+		timeout_ms = 60*1000; // smooth action for customer
+	}
+
+	if (lge_poweroff_timeout.poweroff_timer.function == NULL) {
+		hrtimer_init(&lge_poweroff_timeout.poweroff_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		lge_poweroff_timeout.poweroff_timer.function = lge_poweroff_timeout_handler;
+		hrtimer_start(&lge_poweroff_timeout.poweroff_timer, ms_to_ktime(timeout_ms), HRTIMER_MODE_REL);
+		pr_info("%s : %dsec \n", __func__, (int)(timeout_ms / 1000));
+	}
+	else {
+		pr_info("duplicated %s, ignored\n", __func__);
+	}
+}
+
+static void do_msm_restart_timeout(enum reboot_mode reboot_mode, const char *cmd)
+{
+	static struct lge_poweroff_timeout_struct lge_reboot_timeout;
+	u64 timeout_ms;
+
+	if (lge_get_download_mode() == true) {
+		timeout_ms = 60*1000; // forbid false positive & for debugging
+	} else {
+		timeout_ms = 15*1000; // smooth action for customer
+	}
+
+	if (lge_reboot_timeout.poweroff_timer.function == NULL) {
+	   hrtimer_init(&lge_reboot_timeout.poweroff_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	   lge_reboot_timeout.poweroff_timer.function = lge_reboot_timeout_handler;
+
+	   if ((cmd != NULL && cmd[0] != '\0')) {
+		  pr_info("%s %d %s : %dsec\n", __func__, reboot_mode, cmd, (int)(timeout_ms / 1000));
+		  strlcpy(lge_reboot_timeout.reboot_cmd, cmd, LGE_REBOOT_CMD_SIZE);
+	   }
+	   else {
+		  pr_info("%s %d : %dsec\n", __func__, reboot_mode, (int)(timeout_ms / 1000));
+	   }
+	   hrtimer_start(&lge_reboot_timeout.poweroff_timer, ms_to_ktime(timeout_ms), HRTIMER_MODE_REL);
+	}
+	else {
+	   pr_info("duplicated %s, ignored\n", __func__);
+	}
+}
+#endif
+
 static int msm_restart_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -858,6 +972,11 @@ skip_sysfs_create:
 	pm_power_off = do_msm_poweroff;
 	arm_pm_restart = do_msm_restart;
 
+#ifdef CONFIG_LGE_POWEROFF_TIMEOUT
+	pm_power_off_timeout = do_msm_poweroff_timeout;
+	arm_pm_restart_timeout = do_msm_restart_timeout;
+#endif
+
 	if (scm_is_call_available(SCM_SVC_PWR, SCM_IO_DISABLE_PMIC_ARBITER) > 0)
 		scm_pmic_arbiter_disable_supported = true;
 
@@ -872,6 +991,8 @@ skip_sysfs_create:
 	if (!download_mode)
 		lge_panic_handler_fb_cleanup();
 #endif
+	force_warm_reboot = of_property_read_bool(dev->of_node,
+						"qcom,force-warm-reboot");
 
 	return 0;
 

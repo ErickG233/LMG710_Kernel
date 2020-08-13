@@ -1068,7 +1068,7 @@ static void addr4_event_handler(const struct in_ifaddr *ifa, unsigned long event
 		return;
 
 /* 2015-07-01 hyoseab.song@lge.com, LGP_DATA_TCPIP_MPTCP [START] */
-    if (netdev->name) {
+    if (netdev != NULL) {
         if ((strstr(netdev->name, "wlan0") == NULL) &&
             (strstr(netdev->name, "rmnet_data") == NULL)) {
             mptcp_debug("%s do not allow device : %s\n", __func__,netdev->name);
@@ -1216,7 +1216,7 @@ static void addr6_event_handler(const struct inet6_ifaddr *ifa, unsigned long ev
 		return;
 
 /* 2015-07-01 hyoseab.song@lge.com, LGP_DATA_TCPIP_MPTCP [START] */
-    if (netdev->name) {
+    if (netdev != NULL) {
         if ((strstr(netdev->name, "wlan0") == NULL) &&
             (strstr(netdev->name, "rmnet_data") == NULL)) {
             mptcp_debug("%s do not allow device : %s\n", __func__,netdev->name);

@@ -14,7 +14,6 @@
 
 #define pr_fmt(fmt)     "[Display][lge-cm:%s:%d] " fmt, __func__, __LINE__
 
-#include <linux/kallsyms.h>
 #include "lge_color_manager.h"
 #include "lge_dsi_panel_def.h"
 #include "lge_dsi_panel.h"
@@ -166,7 +165,6 @@ static ssize_t image_enhance_set(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size)
 {
 	ssize_t ret = strnlen(buf, PAGE_SIZE);
-	unsigned int **addr;
 	struct dsi_panel *panel;
 	struct dsi_display *display;
 	int input;
@@ -185,13 +183,7 @@ static ssize_t image_enhance_set(struct device *dev,
 	}
 	mutex_unlock(&panel->panel_lock);
 
-	addr = (unsigned int **)kallsyms_lookup_name("primary_display");
-	if (addr) {
-		display = (struct dsi_display *)*addr;
-	} else {
-		pr_err("primary_display not founded.\n");
-		return -EINVAL;
-	}
+	display = primary_display;
 
 	if(!display) {
 		pr_err("display is null\n");
@@ -355,7 +347,7 @@ static ssize_t rgb_tune_set(struct device *dev,
 	}
 
 	if (!dsi_panel_initialized(panel)) {
-		pr_err("Panel off state. Ignore screen_mode set cmd\n");
+		pr_err("Panel off state. Ignore rgb_tune_set set cmd\n");
 		return -EINVAL;
 	}
 
@@ -373,12 +365,23 @@ static ssize_t rgb_tune_set(struct device *dev,
 			panel->lge.cm_preset_step, panel->lge.cm_red_step,
 			panel->lge.cm_green_step, panel->lge.cm_blue_step);
 
+	mutex_lock(&panel->panel_lock);
+	if (!(panel->lge.screen_mode == screen_mode_auto ||
+			panel->lge.screen_mode == screen_mode_expert || panel->lge.use_mplus)) {
+		pr_info("skip rgb set with screen mode on\n");
+		mutex_unlock(&panel->panel_lock);
+		return ret;
+	}
+	mutex_unlock(&panel->panel_lock);
+
 	if (panel->lge.color_manager_default_status) {
 		panel->lge.color_manager_mode = panel->lge.color_manager_table[0].color_manager_mode;
 		panel->lge.color_manager_status = panel->lge.color_manager_table[0].color_manager_status;
 
 		if (panel->lge.cm_preset_step == 2 &&
 			 !(panel->lge.cm_red_step | panel->lge.cm_green_step | panel->lge.cm_blue_step)) {
+			if (panel->lge.ddic_ops && panel->lge.ddic_ops->lge_set_custom_rgb)
+				panel->lge.ddic_ops->lge_set_custom_rgb(panel, true);
 			panel->lge.dgc_status = 0x00;
 		} else {
 			if (panel->lge.ddic_ops && panel->lge.ddic_ops->lge_set_custom_rgb)
@@ -716,7 +719,7 @@ static ssize_t brightness_dim_get(struct device *dev,
 	if (panel->lge.ddic_ops && panel->lge.ddic_ops->lge_get_brightness_dim)
 		bc_dim_f_cnt = panel->lge.ddic_ops->lge_get_brightness_dim(panel);
 
-	return sprintf(buf, "%d\n", panel->lge.bc_dim_f_cnt);
+	return sprintf(buf, "%d\n", bc_dim_f_cnt);
 }
 
 static ssize_t brightness_dim_set(struct device *dev,
@@ -789,7 +792,125 @@ static ssize_t vr_low_persist_setup(struct device *dev,
 static DEVICE_ATTR(vr_low_persist,  S_IRUGO | S_IWUSR | S_IWGRP,
 					vr_low_persist_read, vr_low_persist_setup);
 
-int lge_color_manager_create_sysfs(struct device *panel_sysfs_dev)
+static ssize_t high_temp_tune_get(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct dsi_panel *panel;
+	int ret = 0;
+
+	panel = dev_get_drvdata(dev);
+	if (!panel) {
+		pr_err("panel is NULL\n");
+		return ret;
+	}
+
+	ret = panel->lge.high_temp_tune_mode;
+
+	return sprintf(buf, "%d\n", ret);
+}
+
+static ssize_t high_temp_tune_set(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	ssize_t ret = strnlen(buf, PAGE_SIZE);
+	struct dsi_panel *panel;
+	struct dsi_display *display;
+	int tune_mode = 0;
+
+	panel = dev_get_drvdata(dev);
+
+	if (!panel) {
+		pr_err("panel is NULL\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&panel->panel_lock);
+	if(!dsi_panel_initialized(panel)) {
+		pr_err("panel not yet initialized\n");
+		mutex_unlock(&panel->panel_lock);
+		return -EINVAL;
+	}
+	mutex_unlock(&panel->panel_lock);
+
+	display = primary_display;
+
+	if(!display) {
+		pr_err("display is null\n");
+		return -EINVAL;
+	}
+
+	if(display->is_cont_splash_enabled) {
+		pr_err("cont_splash enabled\n");
+		return -EINVAL;
+	}
+
+	sscanf(buf, "%d", &tune_mode);
+	pr_debug("tune_mode : %d\n", tune_mode);
+
+	if (panel->lge.ddic_ops && panel->lge.ddic_ops->high_temp_mode_set)
+		panel->lge.ddic_ops->high_temp_mode_set(panel, tune_mode);
+	else
+		pr_info("Not support\n");
+
+	return ret;
+}
+
+static DEVICE_ATTR(high_temp_panel_tune, S_IRUGO | S_IWUSR | S_IWGRP,
+		high_temp_tune_get, high_temp_tune_set);
+
+static ssize_t true_view_get(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct dsi_panel *panel;
+	int len = 0;
+
+	panel = dev_get_drvdata(dev);
+	if (!panel) {
+		pr_err("panel is NULL\n");
+		return len;
+	}
+	if (panel == NULL) {
+		pr_err("Invalid input\n");
+		return -EINVAL;
+	}
+
+	return sprintf(buf, "%d\n", panel->lge.true_view_mode);
+}
+
+static ssize_t true_view_set(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	ssize_t ret = strnlen(buf, PAGE_SIZE);
+	struct dsi_panel *panel;
+	int input_param[2];
+
+	panel = dev_get_drvdata(dev);
+
+	if (panel == NULL) {
+		pr_err("Invalid input\n");
+		return -EINVAL;
+	}
+
+	sscanf(buf, "%d %d", &input_param[0], &input_param[1]);
+
+	if (panel->lge.true_view_mode != input_param[0]) {
+		panel->lge.true_view_mode = input_param[0];
+		pr_info("set mode=%d\n", panel->lge.true_view_mode);
+	} else {
+		pr_info("skip: same request idx=%d\n", panel->lge.true_view_mode);
+		return ret;
+	}
+
+	if (panel->lge.ddic_ops && panel->lge.ddic_ops->lge_set_true_view_mode)
+		panel->lge.ddic_ops->lge_set_true_view_mode(panel, true);
+	else
+		pr_err("can not find lge_true_view_mode\n");
+
+	return ret;
+}
+static DEVICE_ATTR(true_view, S_IRUGO | S_IWUSR | S_IWGRP, true_view_get, true_view_set);
+
+int lge_color_manager_create_sysfs(struct dsi_panel *panel, struct device *panel_sysfs_dev)
 {
 	int rc = 0;
 	if ((rc = device_create_file(panel_sysfs_dev, &dev_attr_daylight_mode)) < 0)
@@ -822,6 +943,14 @@ int lge_color_manager_create_sysfs(struct device *panel_sysfs_dev)
 		pr_err("add brightness dim node fail!\n");
 	if ((rc = device_create_file(panel_sysfs_dev, &dev_attr_vr_low_persist)) < 0)
 		pr_err("add vr node fail!\n");
+	if ((rc = device_create_file(panel_sysfs_dev, &dev_attr_high_temp_panel_tune)) < 0)
+		pr_err("add high_temp_panel_tune node fail!\n");
+
+	if (panel->lge.true_view_supported) {
+		if ((rc = device_create_file(panel_sysfs_dev, &dev_attr_true_view)) < 0)
+			pr_err("add true_view node fail!\n");
+	}
+
 	return rc;
 }
 

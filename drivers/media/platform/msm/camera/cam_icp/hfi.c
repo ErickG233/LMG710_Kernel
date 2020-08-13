@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -67,7 +67,7 @@ void cam_hfi_queue_dump(void)
 
 	qtbl = (struct hfi_qtbl *)hfi_mem->qtbl.kva;
 	qtbl_hdr = &qtbl->q_tbl_hdr;
-	CAM_INFO(CAM_HFI,
+	CAM_DBG(CAM_HFI,
 		"qtbl: version = %x size = %u num q = %u qhdr_size = %u",
 		qtbl_hdr->qtbl_version, qtbl_hdr->qtbl_size,
 		qtbl_hdr->qtbl_num_q, qtbl_hdr->qtbl_qhdr_size);
@@ -78,9 +78,11 @@ void cam_hfi_queue_dump(void)
 		cmd_q_hdr->qhdr_write_idx, hfi_mem->cmd_q.iova);
 	read_q = (uint32_t *)g_hfi->map.cmd_q.kva;
 	read_ptr = (uint32_t *)(read_q + 0);
-	CAM_INFO(CAM_HFI, "CMD Q START");
+	CAM_INFO(CAM_HFI, "CMD Q %p", read_q);
+	CAM_DBG(CAM_HFI, "CMD Q START");
 	for (i = 0; i < ICP_CMD_Q_SIZE_IN_BYTES >> BYTE_WORD_SHIFT; i++)
-		CAM_INFO(CAM_HFI, "Word: %d Data: 0x%08x ", i, read_ptr[i]);
+		CAM_DBG(CAM_HFI, "Word: %d Data: 0x%08x ", i, read_ptr[i]);
+	CAM_DBG(CAM_HFI, "CMD Q END");
 
 	msg_q_hdr = &qtbl->q_hdr[Q_MSG];
 	CAM_INFO(CAM_HFI, "msg: size = %u r_idx = %u w_idx = %u addr = %x",
@@ -88,9 +90,11 @@ void cam_hfi_queue_dump(void)
 		msg_q_hdr->qhdr_write_idx, hfi_mem->msg_q.iova);
 	read_q = (uint32_t *)g_hfi->map.msg_q.kva;
 	read_ptr = (uint32_t *)(read_q + 0);
-	CAM_INFO(CAM_HFI, "MSG Q START");
+	CAM_INFO(CAM_HFI, "MSG Q %p", read_ptr);
+	CAM_DBG(CAM_HFI, "MSG Q START");
 	for (i = 0; i < ICP_MSG_Q_SIZE_IN_BYTES >> BYTE_WORD_SHIFT; i++)
-		CAM_INFO(CAM_HFI, "Word: %d Data: 0x%08x ", i, read_ptr[i]);
+		CAM_DBG(CAM_HFI, "Word: %d Data: 0x%08x ", i, read_ptr[i]);
+	CAM_DBG(CAM_HFI, "MSG Q END");
 }
 
 int hfi_write_cmd(void *cmd_ptr)
@@ -540,7 +544,7 @@ void cam_hfi_disable_cpu(void __iomem *icp_base)
 	cam_io_w_mb((uint32_t)ICP_INIT_REQUEST_RESET,
 		icp_base + HFI_REG_HOST_ICP_INIT_REQUEST);
 	cam_io_w_mb((uint32_t)INTR_DISABLE,
-		g_hfi->csr_base + HFI_REG_A5_CSR_A2HOSTINTEN);
+		icp_base + HFI_REG_A5_CSR_A2HOSTINTEN);
 }
 
 void cam_hfi_enable_cpu(void __iomem *icp_base)
@@ -632,6 +636,10 @@ int cam_hfi_resume(struct hfi_mem_info *hfi_mem,
 		icp_base + HFI_REG_QDSS_IOVA);
 	cam_io_w_mb((uint32_t)hfi_mem->qdss.len,
 		icp_base + HFI_REG_QDSS_IOVA_SIZE);
+	cam_io_w_mb((uint32_t)hfi_mem->io_mem.iova,
+		icp_base + HFI_REG_IO_REGION_IOVA);
+	cam_io_w_mb((uint32_t)hfi_mem->io_mem.len,
+		icp_base + HFI_REG_IO_REGION_SIZE);
 
 	return rc;
 }
@@ -820,6 +828,10 @@ int cam_hfi_init(uint8_t event_driven_mode, struct hfi_mem_info *hfi_mem,
 		icp_base + HFI_REG_QDSS_IOVA);
 	cam_io_w_mb((uint32_t)hfi_mem->qdss.len,
 		icp_base + HFI_REG_QDSS_IOVA_SIZE);
+	cam_io_w_mb((uint32_t)hfi_mem->io_mem.iova,
+		icp_base + HFI_REG_IO_REGION_IOVA);
+	cam_io_w_mb((uint32_t)hfi_mem->io_mem.len,
+		icp_base + HFI_REG_IO_REGION_SIZE);
 
 	hw_version = cam_io_r(icp_base + HFI_REG_A5_HW_VERSION);
 

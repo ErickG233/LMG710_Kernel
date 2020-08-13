@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -30,7 +30,8 @@
 
 static struct cam_fd_hw_mgr g_fd_hw_mgr;
 
-static int cam_fd_mgr_util_packet_validate(struct cam_packet *packet)
+static int cam_fd_mgr_util_packet_validate(struct cam_packet *packet,
+	size_t remain_len)
 {
 	struct cam_cmd_buf_desc *cmd_desc = NULL;
 	int i, rc;
@@ -50,7 +51,7 @@ static int cam_fd_mgr_util_packet_validate(struct cam_packet *packet)
 		packet->patch_offset, packet->num_patches,
 		packet->kmd_cmd_buf_offset, packet->kmd_cmd_buf_index);
 
-	if (cam_packet_util_validate_packet(packet)) {
+	if (cam_packet_util_validate_packet(packet, remain_len)) {
 		CAM_ERR(CAM_FD, "invalid packet:%d %d %d %d %d",
 			packet->kmd_cmd_buf_index,
 			packet->num_cmd_buf, packet->cmd_buf_offset,
@@ -170,6 +171,23 @@ static int cam_fd_mgr_util_put_frame_req(
 	return rc;
 }
 
+/* LGE_CHANGE_S, Fixed list leakage on FD node, 2018-12-28 */
+static int cam_fd_mgr_util_put_frame_req_unlocked(
+	struct list_head *src_list,
+	struct cam_fd_mgr_frame_request **frame_req)
+{
+	int rc = 0;
+	struct cam_fd_mgr_frame_request *req_ptr = NULL;
+
+	req_ptr = *frame_req;
+	if (req_ptr)
+		list_add_tail(&req_ptr->list, src_list);
+	*frame_req = NULL;
+
+	return rc;
+}
+/* LGE_CHANGE_E, Fixed list leakage on FD node, 2018-12-28 */
+
 static int cam_fd_mgr_util_get_frame_req(
 	struct list_head *src_list,
 	struct cam_fd_mgr_frame_request **frame_req)
@@ -222,6 +240,7 @@ static int cam_fd_mgr_util_release_device(struct cam_fd_hw_mgr *hw_mgr,
 	struct cam_fd_hw_release_args hw_release_args;
 	int rc;
 
+	memset(&hw_release_args, 0, sizeof(hw_release_args));
 	rc = cam_fd_mgr_util_get_device(hw_mgr, hw_ctx, &hw_device);
 	if (rc) {
 		CAM_ERR(CAM_FD, "Error in getting device %d", rc);
@@ -259,6 +278,7 @@ static int cam_fd_mgr_util_select_device(struct cam_fd_hw_mgr *hw_mgr,
 	struct cam_fd_hw_reserve_args hw_reserve_args;
 	struct cam_fd_device *hw_device = NULL;
 
+	memset(&hw_reserve_args, 0, sizeof(hw_reserve_args));
 	if (!hw_mgr || !hw_ctx || !fd_acquire_args) {
 		CAM_ERR(CAM_FD, "Invalid input %pK %pK %pK", hw_mgr, hw_ctx,
 			fd_acquire_args);
@@ -417,7 +437,7 @@ static int cam_fd_packet_generic_blob_handler(void *user_data,
 		uint32_t *get_raw_results = (uint32_t *)blob_data;
 
 		if (sizeof(uint32_t) != blob_size) {
-			CAM_ERR(CAM_FD, "Invalid blob size %lu %u",
+			CAM_ERR(CAM_FD, "Invalid blob size %zu %u",
 				sizeof(uint32_t), blob_size);
 			return -EINVAL;
 		}
@@ -430,7 +450,7 @@ static int cam_fd_packet_generic_blob_handler(void *user_data,
 			(struct cam_fd_soc_clock_bw_request *)blob_data;
 
 		if (sizeof(struct cam_fd_soc_clock_bw_request) != blob_size) {
-			CAM_ERR(CAM_FD, "Invalid blob size %lu %u",
+			CAM_ERR(CAM_FD, "Invalid blob size %zu %u",
 				sizeof(struct cam_fd_soc_clock_bw_request),
 				blob_size);
 			return -EINVAL;
@@ -537,7 +557,7 @@ static int cam_fd_mgr_util_prepare_io_buf_info(int32_t iommu_hdl,
 	uint32_t i, j, plane, num_out_buf, num_in_buf;
 	struct cam_buf_io_cfg *io_cfg;
 	dma_addr_t io_addr[CAM_PACKET_MAX_PLANES];
-	uint64_t cpu_addr[CAM_PACKET_MAX_PLANES];
+	uintptr_t cpu_addr[CAM_PACKET_MAX_PLANES];
 	size_t size;
 	bool need_io_map, need_cpu_map;
 
@@ -583,7 +603,7 @@ static int cam_fd_mgr_util_prepare_io_buf_info(int32_t iommu_hdl,
 				rc = cam_mem_get_io_buf(
 					io_cfg[i].mem_handle[plane],
 					iommu_hdl, &io_addr[plane], &size);
-				if ((rc) || (io_addr[plane] >> 32)) {
+				if (rc) {
 					CAM_ERR(CAM_FD,
 						"Invalid io buf %d %d %d %d",
 						io_cfg[i].direction,
@@ -599,7 +619,8 @@ static int cam_fd_mgr_util_prepare_io_buf_info(int32_t iommu_hdl,
 				rc = cam_mem_get_cpu_buf(
 					io_cfg[i].mem_handle[plane],
 					&cpu_addr[plane], &size);
-				if (rc) {
+				if (rc || ((io_addr[plane] & 0xFFFFFFFF)
+					!= io_addr[plane])) {
 					CAM_ERR(CAM_FD,
 						"Invalid cpu buf %d %d %d %d",
 						io_cfg[i].direction,
@@ -607,7 +628,13 @@ static int cam_fd_mgr_util_prepare_io_buf_info(int32_t iommu_hdl,
 						rc);
 					return rc;
 				}
-
+				if (io_cfg[i].offsets[plane] >= size) {
+					CAM_ERR(CAM_FD,
+						"Invalid cpu buf %d %d %d",
+						io_cfg[i].direction,
+						io_cfg[i].resource_type, plane);
+					return -EINVAL;
+				}
 				cpu_addr[plane] += io_cfg[i].offsets[plane];
 			}
 
@@ -797,6 +824,7 @@ static int cam_fd_mgr_util_submit_frame(void *priv, void *data)
 	struct cam_fd_hw_cmd_start_args start_args;
 	int rc;
 
+	memset(&start_args, 0, sizeof(start_args));
 	if (!priv) {
 		CAM_ERR(CAM_FD, "Invalid data");
 		return -EINVAL;
@@ -1088,8 +1116,11 @@ static int cam_fd_mgr_hw_get_caps(void *hw_mgr_priv, void *hw_get_caps_args)
 	struct cam_fd_hw_mgr *hw_mgr = hw_mgr_priv;
 	struct cam_query_cap_cmd *query = hw_get_caps_args;
 	struct cam_fd_query_cap_cmd query_fd;
+	void __user *caps_handle =
+		u64_to_user_ptr(query->caps_handle);
 
-	if (copy_from_user(&query_fd, (void __user *)query->caps_handle,
+	memset(&query_fd, 0, sizeof(query_fd));
+	if (copy_from_user(&query_fd, caps_handle,
 		sizeof(struct cam_fd_query_cap_cmd))) {
 		CAM_ERR(CAM_FD, "Failed in copy from user, rc=%d", rc);
 		return -EFAULT;
@@ -1106,7 +1137,7 @@ static int cam_fd_mgr_hw_get_caps(void *hw_mgr_priv, void *hw_get_caps_args)
 		query_fd.hw_caps.wrapper_version.major,
 		query_fd.hw_caps.wrapper_version.minor);
 
-	if (copy_to_user((void __user *)query->caps_handle, &query_fd,
+	if (copy_to_user(caps_handle, &query_fd,
 		sizeof(struct cam_fd_query_cap_cmd)))
 		rc = -EFAULT;
 
@@ -1116,12 +1147,12 @@ static int cam_fd_mgr_hw_get_caps(void *hw_mgr_priv, void *hw_get_caps_args)
 static int cam_fd_mgr_hw_acquire(void *hw_mgr_priv, void *hw_acquire_args)
 {
 	struct cam_fd_hw_mgr *hw_mgr = (struct cam_fd_hw_mgr *)hw_mgr_priv;
-	struct cam_hw_acquire_args *acquire_args =
-		(struct cam_hw_acquire_args *)hw_acquire_args;
+	struct cam_hw_acquire_args *acquire_args = (struct cam_hw_acquire_args *)hw_acquire_args;
 	struct cam_fd_hw_mgr_ctx *hw_ctx;
 	struct cam_fd_acquire_dev_info fd_acquire_args;
 	int rc;
 
+	memset(&fd_acquire_args, 0, sizeof(fd_acquire_args));
 	if (!acquire_args || acquire_args->num_acq <= 0) {
 		CAM_ERR(CAM_FD, "Invalid acquire args %pK", acquire_args);
 		return -EINVAL;
@@ -1227,6 +1258,7 @@ static int cam_fd_mgr_hw_start(void *hw_mgr_priv, void *mgr_start_args)
 	struct cam_fd_device *hw_device;
 	struct cam_fd_hw_init_args hw_init_args;
 
+	memset(&hw_init_args, 0, sizeof(hw_init_args));
 	if (!hw_mgr_priv || !hw_mgr_start_args) {
 		CAM_ERR(CAM_FD, "Invalid arguments %pK %pK",
 			hw_mgr_priv, hw_mgr_start_args);
@@ -1277,6 +1309,7 @@ static int cam_fd_mgr_hw_flush_req(void *hw_mgr_priv,
 	struct cam_fd_hw_mgr_ctx *hw_ctx;
 	uint32_t i = 0;
 
+	memset(&hw_stop_args, 0, sizeof(hw_stop_args));
 	hw_ctx = (struct cam_fd_hw_mgr_ctx *)flush_args->ctxt_to_hw_map;
 
 	if (!hw_ctx || !hw_ctx->ctx_in_use) {
@@ -1331,6 +1364,15 @@ static int cam_fd_mgr_hw_flush_req(void *hw_mgr_priv,
 
 			list_del_init(&frame_req->list);
 
+			/* LGE_CHANGE_S, Fixed list leakage on FD node, 2018-12-28 */
+			// nodes removed from frame_processing_list should be added to frame_free_list
+			rc = cam_fd_mgr_util_put_frame_req_unlocked(&hw_mgr->frame_free_list,
+				&frame_req);
+			if (rc) {
+				CAM_ERR(CAM_FD, "Failed in putting frame req in free list");
+			}
+			/* LGE_CHANGE_E, Fixed list leakage on FD node, 2018-12-28 */
+
 			mutex_lock(&hw_device->lock);
 			if ((hw_device->ready_to_process == true) ||
 				(hw_device->cur_hw_ctx != hw_ctx))
@@ -1378,6 +1420,7 @@ static int cam_fd_mgr_hw_flush_ctx(void *hw_mgr_priv,
 	struct cam_fd_hw_mgr_ctx *hw_ctx;
 	uint32_t i = 0;
 
+	memset(&hw_stop_args, 0, sizeof(hw_stop_args));
 	hw_ctx = (struct cam_fd_hw_mgr_ctx *)flush_args->ctxt_to_hw_map;
 
 	if (!hw_ctx || !hw_ctx->ctx_in_use) {
@@ -1416,6 +1459,16 @@ static int cam_fd_mgr_hw_flush_ctx(void *hw_mgr_priv,
 			continue;
 
 		list_del_init(&frame_req->list);
+
+		/* LGE_CHANGE_S, Fixed list leakage on FD node, 2018-12-28 */
+		// nodes removed from frame_processing_list should be added to frame_free_list
+		rc = cam_fd_mgr_util_put_frame_req_unlocked(&hw_mgr->frame_free_list,
+			&frame_req);
+		if (rc) {
+			CAM_ERR(CAM_FD, "Failed in putting frame req in free list");
+		}
+		/* LGE_CHANGE_E, Fixed list leakage on FD node, 2018-12-28 */
+
 		mutex_lock(&hw_device->lock);
 		if ((hw_device->ready_to_process == true) ||
 			(hw_device->cur_hw_ctx != hw_ctx))
@@ -1487,6 +1540,7 @@ static int cam_fd_mgr_hw_stop(void *hw_mgr_priv, void *mgr_stop_args)
 	struct cam_fd_hw_deinit_args hw_deinit_args;
 	int rc = 0;
 
+	memset(&hw_deinit_args, 0, sizeof(hw_deinit_args));
 	if (!hw_mgr_priv || !hw_mgr_stop_args) {
 		CAM_ERR(CAM_FD, "Invalid arguments %pK %pK",
 			hw_mgr_priv, hw_mgr_stop_args);
@@ -1538,6 +1592,7 @@ static int cam_fd_mgr_hw_prepare_update(void *hw_mgr_priv,
 	struct cam_fd_hw_cmd_prestart_args prestart_args;
 	struct cam_fd_mgr_frame_request *frame_req;
 
+	memset(&kmd_buf, 0 , sizeof(kmd_buf));
 	if (!hw_mgr_priv || !hw_prepare_update_args) {
 		CAM_ERR(CAM_FD, "Invalid args %pK %pK",
 			hw_mgr_priv, hw_prepare_update_args);
@@ -1556,7 +1611,8 @@ static int cam_fd_mgr_hw_prepare_update(void *hw_mgr_priv,
 		goto error;
 	}
 
-	rc = cam_fd_mgr_util_packet_validate(prepare->packet);
+	rc = cam_fd_mgr_util_packet_validate(prepare->packet,
+		prepare->remain_len);
 	if (rc) {
 		CAM_ERR(CAM_FD, "Error in packet validation %d", rc);
 		goto error;

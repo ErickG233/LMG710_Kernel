@@ -93,6 +93,7 @@ static enum alarmtimer_restart lgmd18_timer_function(struct alarm *alarm,
 	return ALARMTIMER_NORESTART;
 }
 
+#ifndef CONFIG_LGE_USB_MOISTURE_DETECTION_NO_UX
 static void lgmd18_probe_md_work(struct work_struct *w)
 {
 	struct lgmd18 *lgmd18 = container_of(w, struct lgmd18, probe_md_work);
@@ -143,6 +144,7 @@ moisture_detected:
 				  &propval);
 	power_supply_changed(lgmd18->usb_psy);
 }
+#endif
 
 static void lgmd18_shutdown(struct platform_device *pdev)
 {
@@ -177,7 +179,9 @@ static int lgmd18_probe(struct platform_device *pdev)
 
 	lgmd18 = iio_priv(indio_dev);
 	lgmd18->dev = &pdev->dev;
+#ifndef CONFIG_LGE_USB_MOISTURE_DETECTION_NO_UX
 	INIT_WORK(&lgmd18->probe_md_work, lgmd18_probe_md_work);
+#endif
 
 	platform_set_drvdata(pdev, lgmd18);
 
@@ -329,7 +333,9 @@ static int lgmd18_probe(struct platform_device *pdev)
 			   lgmd18_timer_function);
 	}
 
+#ifndef CONFIG_LGE_USB_MOISTURE_DETECTION_NO_UX
 	queue_work(system_highpri_wq, &lgmd18->probe_md_work);
+#endif
 
 	return devm_iio_device_register(dev, indio_dev);
 }

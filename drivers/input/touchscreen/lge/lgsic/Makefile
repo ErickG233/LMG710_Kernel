@@ -10,4 +10,4 @@ ccflags-y += -I$(srctree)/drivers/input/touchscreen/lge/
 obj-$(CONFIG_LGE_TOUCH_LGSIC_SW49408)           += sw49408/
 obj-$(CONFIG_LGE_TOUCH_LGSIC_SW49409)           += sw49409/
 obj-$(CONFIG_LGE_TOUCH_LGSIC_SW49410)           += sw49410/
-
+obj-$(CONFIG_LGE_TOUCH_LGSIC_SW42000)           += sw42000/

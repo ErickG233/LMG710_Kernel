@@ -40,6 +40,15 @@
 		bob_pwm_threshold  = <200000>;
 		lrmc_bob_vreg-supply = <&pmi8998_bob>;
 	};
+
+	lge,pon-backup {
+		compatible = "lge,pon-backup";
+		lge,regulator-table = <
+		/*                 SPMS LDO BOB */
+		/* 0 - PM845   */   13  29   0
+		/* 1 - PMI8998 */    0   0   0
+		/* 2 - PM8005  */    4   0   0 >;
+	};
 };
 
 &soc {
@@ -440,6 +449,7 @@
 		polling-delay = <0>;
 		thermal-sensors = <&pm8998_adc_tm 0x4c>;
 		thermal-governor = "user_space";
+		wake-capable-sensor;
 
 		trips {
 			active-config0 {
@@ -455,6 +465,7 @@
 		polling-delay = <0>;
 		thermal-sensors = <&pm8998_adc_tm 0x4f>;
 		thermal-governor = "user_space";
+		wake-capable-sensor;
 
 		trips {
 			active-config0 {
@@ -470,6 +481,7 @@
 		polling-delay = <0>;
 		thermal-sensors = <&pm8998_adc_tm 0x50>;
 		thermal-governor = "user_space";
+		wake-capable-sensor;
 
 		trips {
 			active-config0 {
@@ -485,6 +497,7 @@
 		polling-delay = <0>;
 		thermal-sensors = <&pm8998_adc_tm 0x51>;
 		thermal-governor = "user_space";
+		wake-capable-sensor;
 
 		trips {
 			active-config0 {
@@ -499,6 +512,7 @@
 		polling-delay-passive = <0>;
 		polling-delay = <0>;
 		thermal-governor = "user_space";
+		wake-capable-sensor;
 	};
 
 	soc {

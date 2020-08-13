@@ -78,6 +78,12 @@ struct bio {
 	*/
 	struct inode            *bi_dio_inode;
 #endif
+#ifdef CONFIG_LGE_IOSCHED_EXTENSION
+	unsigned short		bi_excontrol;
+#endif
+#ifdef CONFIG_DM_DEFAULT_KEY
+	int bi_crypt_skip;
+#endif
 
 	unsigned short		bi_vcnt;	/* how many bio_vec's */
 
@@ -106,14 +112,8 @@ struct bio {
 #define bio_op(bio)	((bio)->bi_opf >> BIO_OP_SHIFT)
 
 #define bio_set_op_attrs(bio, op, op_flags) do {			\
-	if (__builtin_constant_p(op))					\
-		BUILD_BUG_ON((op) + 0U >= (1U << REQ_OP_BITS));		\
-	else								\
-		WARN_ON_ONCE((op) + 0U >= (1U << REQ_OP_BITS));		\
-	if (__builtin_constant_p(op_flags))				\
-		BUILD_BUG_ON((op_flags) + 0U >= (1U << BIO_OP_SHIFT));	\
-	else								\
-		WARN_ON_ONCE((op_flags) + 0U >= (1U << BIO_OP_SHIFT));	\
+	WARN_ON_ONCE((op) + 0U >= (1U << REQ_OP_BITS));			\
+	WARN_ON_ONCE((op_flags) + 0U >= (1U << BIO_OP_SHIFT));		\
 	(bio)->bi_opf = bio_flags(bio);					\
 	(bio)->bi_opf |= (((op) + 0U) << BIO_OP_SHIFT);			\
 	(bio)->bi_opf |= (op_flags);					\
@@ -185,6 +185,9 @@ enum rq_flag_bits {
 	__REQ_FUA,		/* forced unit access */
 	__REQ_PREFLUSH,		/* request for cache flush */
 	__REQ_BARRIER,		/* marks flush req as barrier */
+        /* Android specific flags */
+	__REQ_NOENCRYPT,	/* ok to not encrypt (already encrypted at fs
+				   level) */
 
 	/* bio only flags */
 	__REQ_RAHEAD,		/* read ahead, can fail anytime */
@@ -225,6 +228,7 @@ enum rq_flag_bits {
 #define REQ_URGENT		(1ULL << __REQ_URGENT)
 #define REQ_NOIDLE		(1ULL << __REQ_NOIDLE)
 #define REQ_INTEGRITY		(1ULL << __REQ_INTEGRITY)
+#define REQ_NOENCRYPT		(1ULL << __REQ_NOENCRYPT)
 
 #define REQ_FAILFAST_MASK \
 	(REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT | REQ_FAILFAST_DRIVER)
@@ -272,6 +276,17 @@ enum req_op {
 };
 
 #define REQ_OP_BITS 3
+
+#ifdef CONFIG_LGE_IOSCHED_EXTENSION
+#define __REQ_EX_MAX 15
+enum req_exflag_bits {
+	__REQ_EX_ORDERED,
+
+	__REQ_EX_NR_BITS = __REQ_EX_MAX,
+};
+
+#define REQ_EX_ORDERED (1 << __REQ_EX_ORDERED)
+#endif
 
 typedef unsigned int blk_qc_t;
 #define BLK_QC_T_NONE	-1U

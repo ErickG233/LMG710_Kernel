@@ -6,7 +6,6 @@
 #include "sde_connector.h"
 #include "sde_encoder.h"
 #include <linux/backlight.h>
-#include <linux/kallsyms.h>
 #include <linux/leds.h>
 #include "dsi_drm.h"
 #include "dsi_display.h"
@@ -14,10 +13,7 @@
 
 #include "lge_brightness_def.h"
 #include "lge_brightness.h"
-
-#if IS_ENABLED(CONFIG_LGE_DISPLAY_DIMMING_BOOT_SUPPORT)
 #include "lge_dsi_panel.h"
-#endif
 
 char *blmap_names[] = {
 	"lge,blmap",
@@ -35,6 +31,7 @@ char *blmap_names[] = {
 	"lge,blmap-hbm-hd",
 	"lge,blmap-ve",
 	"lge,blmap-ex",
+	"lge,blmap-hdr",
 };
 static const int blmap_names_num = sizeof(blmap_names)/sizeof(blmap_names[0]);
 
@@ -92,6 +89,22 @@ static int lge_dsi_panel_parse_blmap_sub(struct device_node *of_node, const char
 
 	return rc;
 }
+
+
+int lge_dsi_panel_parse_brightness(struct dsi_panel *panel,
+	struct device_node *of_node)
+{
+	int rc = 0;
+
+	rc = of_property_read_u32(of_node, "lge,default-brightness", &panel->lge.default_brightness);
+	if (rc) {
+		return rc;
+	} else {
+		pr_info("default brightness=%d \n", panel->lge.default_brightness);
+	}
+
+	return rc;
+};
 
 int lge_dsi_panel_parse_blmap(struct dsi_panel *panel,
 	struct device_node *of_node)
@@ -197,7 +210,7 @@ int lge_backlight_device_update_status(struct backlight_device *bd)
 	struct dsi_display *display;
 	struct sde_connector *c_conn;
 	int bl_lvl;
-	struct drm_event event;
+	struct drm_event event = {0,};
 	enum lge_blmap_type bl_type;
 	int rc = 0;
 
@@ -309,7 +322,7 @@ int dsi_panel_update_backlight(struct dsi_panel *panel,
 static ssize_t hl_mode_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-	struct dsi_panel *panel;
+	struct dsi_panel *panel = NULL;
 	int ret = 0;
 
 	panel = dev_get_drvdata(dev);
@@ -330,7 +343,6 @@ static ssize_t hl_mode_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size)
 {
 	ssize_t ret = strnlen(buf, PAGE_SIZE);
-	unsigned int **addr;
 	struct dsi_panel *panel;
 	struct dsi_display *display;
 	int input;
@@ -349,17 +361,11 @@ static ssize_t hl_mode_store(struct device *dev,
 		panel->lge.hl_mode = input;
 		pr_err("panel not yet initialized. hl_mode is stored.\n");
 		mutex_unlock(&panel->panel_lock);
-		return -EINVAL;
+		return ret;
 	}
 	mutex_unlock(&panel->panel_lock);
 
-	addr = (unsigned int **)kallsyms_lookup_name("primary_display");
-	if (addr) {
-		display = (struct dsi_display *)*addr;
-	} else {
-		pr_err("primary_display not founded.\n");
-		return -EINVAL;
-	}
+	display = primary_display;
 
 	if(!display) {
 		pr_err("display is null\n");
@@ -406,7 +412,6 @@ static ssize_t irc_brighter_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size)
 {
 	ssize_t ret = strnlen(buf, PAGE_SIZE);
-	unsigned int **addr;
 	struct dsi_panel *panel;
 	struct dsi_display *display;
 	int input;
@@ -421,7 +426,8 @@ static ssize_t irc_brighter_store(struct device *dev,
 	pr_info("input data %d\n", input);
 
 	mutex_lock(&panel->panel_lock);
-	if(!dsi_panel_initialized(panel) && panel->lge.use_irc_ctrl) {
+	if(!dsi_panel_initialized(panel) &&
+			(panel->lge.use_irc_ctrl || panel->lge.use_ace_ctrl)) {
 		panel->lge.irc_pending = true;
 		panel->lge.irc_request_state = ((input == 1) ? LGE_IRC_OFF : LGE_IRC_ON);
 		pr_err("panel not yet initialized. irc_ctrl is stored.\n");
@@ -430,13 +436,7 @@ static ssize_t irc_brighter_store(struct device *dev,
 	}
 	mutex_unlock(&panel->panel_lock);
 
-	addr = (unsigned int **)kallsyms_lookup_name("main_display");
-	if (addr) {
-		display = (struct dsi_display *)*addr;
-	} else {
-		pr_err("main_display not founded.\n");
-		return -EINVAL;
-	}
+	display = primary_display;
 
 	if (!display) {
 		pr_err("display is null\n");
@@ -449,7 +449,7 @@ static ssize_t irc_brighter_store(struct device *dev,
 	}
 
 	mutex_lock(&panel->panel_lock);
-	if (panel->lge.use_irc_ctrl &&
+	if ((panel->lge.use_irc_ctrl || panel->lge.use_ace_ctrl) &&
 			panel->lge.ddic_ops && panel->lge.ddic_ops->set_irc_state) {
 		panel->lge.irc_pending = true;
 		panel->lge.irc_request_state = ((input == 1) ? LGE_IRC_OFF : LGE_IRC_ON);
@@ -477,11 +477,13 @@ static ssize_t irc_support_show(struct device *dev,
 		return ret;
 	}
 
-	if (!panel->lge.use_irc_ctrl) {
+	if (!(panel->lge.use_irc_ctrl || panel->lge.use_ace_ctrl)) {
 		pr_err("irc control is not supported\n");
+	} else {
+		ret = panel->lge.use_irc_ctrl || panel->lge.use_ace_ctrl;
 	}
 
-	return sprintf(buf, "%d\n", (int)panel->lge.use_irc_ctrl);
+	return sprintf(buf, "%d\n", ret);
 }
 static DEVICE_ATTR(irc_support, S_IRUGO, irc_support_show, NULL);
 
@@ -502,7 +504,7 @@ int lge_brightness_create_sysfs(struct dsi_panel *panel,
 					pr_err("add hl_mode set node fail!");
 			}
 
-			if (panel->lge.use_irc_ctrl) {
+			if (panel->lge.use_irc_ctrl || panel->lge.use_ace_ctrl) {
 				if ((rc = device_create_file(brightness_sysfs_dev,
 								&dev_attr_irc_brighter)) < 0)
 					pr_err("add irc_mode set node fail!");

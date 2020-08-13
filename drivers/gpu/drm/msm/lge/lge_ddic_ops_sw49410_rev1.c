@@ -21,6 +21,8 @@
 		b[3] = WORD_LOWER_BYTE(w2);\
 } while(0)
 
+#define MAX_HIGH_TEMP_PANEL_TUNE_LEVEL 4
+
 extern int lge_ddic_dsi_panel_tx_cmd_set(struct dsi_panel *panel,
 				enum lge_ddic_dsi_cmd_set_type type);
 
@@ -520,7 +522,7 @@ void mplus_mode_send_sw49410_rev1(struct dsi_panel *panel, enum lge_mplus_mode r
 	lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_SET_MPLUS);
 
 	mp_mode_set += LGE_DDIC_DSI_MPLUS_MODE_SET1;
-	lge_ddic_dsi_panel_tx_cmd_set(panel, mp_mode_set);
+	lge_ddic_dsi_panel_tx_cmd_set(panel, (enum lge_ddic_dsi_cmd_set_type)mp_mode_set);
 
 	lge_set_rgb_tune_send_sw49410_rev1(panel, gc_mode);
 	lge_set_screen_tune_send_sw49410_rev1(panel, lge_screen_tune_status);
@@ -799,6 +801,31 @@ void sharpness_set_sw49410_rev1(struct dsi_panel *panel, int mode)
 	return;
 }
 
+void high_temp_mode_set_sw49410_rev1(struct dsi_panel *panel, int mode)
+{
+	mutex_lock(&panel->panel_lock);
+
+	if (panel->lge.high_temp_tune_mode == mode) {
+		pr_info("skip high_temp_panel_tune_mode control! mode:%d\n", mode);
+		mutex_unlock(&panel->panel_lock);
+		return;
+	}
+
+	if (mode < 0 || mode > MAX_HIGH_TEMP_PANEL_TUNE_LEVEL) {
+		pr_info("invalid high_temp_panel_tune_mode:%d\n", mode);
+		mutex_unlock(&panel->panel_lock);
+		return;
+	}
+
+	panel->lge.high_temp_tune_mode = mode;
+	pr_info("high_temp_tune_mode : %d\n", panel->lge.high_temp_tune_mode);
+
+	lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_HIGH_TEMP_TUNE0 + mode);
+
+	mutex_unlock(&panel->panel_lock);
+	return;
+}
+
 struct lge_ddic_ops sw49410_rev1_ops = {
 	.store_aod_area = store_aod_area,
 	.prepare_aod_cmds = prepare_aod_cmds_sw49410_rev1,
@@ -822,4 +849,5 @@ struct lge_ddic_ops sw49410_rev1_ops = {
 	.image_enhance_set = image_enhance_set_sw49410_rev1,
 	.mp_blmap = mp_blmap_sw49410_rev1,
 	.mp_blmap_sub = mp_blmap_sw49410_rev1_sub,
+	.high_temp_mode_set = high_temp_mode_set_sw49410_rev1,
 };

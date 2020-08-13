@@ -139,8 +139,9 @@ struct idtp9222_struct {
 	bool			status_dcin;		// presence of DCIN on PMIC side
 	bool			status_full;		// it means EoC, not 100%
 	bool			status_overheat;
-	int 			status_capacity;
-	int			status_temperature;
+	int			capacity;
+	int			capacity_raw;
+	int			temperature;
 	/* onpad flags */
 	enum idtp9222_opmode	opmode_type;		// WPC or PMA
 	bool			opmode_midpower;	// 9W or 5W
@@ -152,6 +153,7 @@ struct idtp9222_struct {
 	int			configure_bppcurr;
 	int			configure_eppcurr;
 	int			configure_overheat;	// shutdown threshold for overheat
+	int			configure_rawfull;
 	bool			configure_sysfs;	// making sysfs or not (for debug)
 };
 
@@ -375,12 +377,46 @@ static bool idtp9222_set_fod(struct idtp9222_struct* idtp9222) {
 	return true;
 }
 
+static bool idtp9222_set_full(struct idtp9222_struct* idtp9222) {
+	bool full = (idtp9222->capacity_raw >= idtp9222->configure_rawfull);
+
+	if (idtp9222_is_full(idtp9222) == full) {
+		pr_idt(IDT_VERBOSE, "status full is already set to %d\n", full);
+		return false;
+	}
+
+	if (full) {
+		switch (idtp9222->opmode_type) {
+		case WPC :
+			/* CS100 is special signal for some TX pads */
+			idtp9222_reg_write(idtp9222->wlc_client, REG_ADDR_CHGSTAT, 100);
+			idtp9222_reg_write(idtp9222->wlc_client, REG_ADDR_COMMAND, SEND_CHGSTAT);
+			pr_idt(IDT_UPDATE, "Sending CS100 to WPC pads for EoC\n");
+			break;
+		case PMA :
+			idtp9222_reg_write(idtp9222->wlc_client, REG_ADDR_EPT, EPT_BY_EOC);
+			idtp9222_reg_write(idtp9222->wlc_client, REG_ADDR_COMMAND, SEND_EPT);
+			pr_idt(IDT_UPDATE, "Sending EPT to PMA pads for EoC\n");
+			break;
+		default :
+			pr_idt(IDT_ERROR, "Is IDTP onpad really?\n");
+			break;
+		}
+	}
+	else
+		; // Nothing to do for !full
+
+	idtp9222->status_full = full;
+	return true;
+}
+
+
 static bool idtp9222_set_capacity(struct idtp9222_struct* idtp9222) {
-	if (idtp9222->status_capacity < 100) {
+	if (idtp9222->capacity < 100) {
 		if (idtp9222->opmode_type == WPC) {
 			/* CS100 is special signal for some TX pads */
 			idtp9222_reg_write(idtp9222->wlc_client, REG_ADDR_CHGSTAT,
-				idtp9222->status_capacity);
+				idtp9222->capacity);
 			idtp9222_reg_write(idtp9222->wlc_client, REG_ADDR_COMMAND,
 				SEND_CHGSTAT);
 		}
@@ -406,7 +442,7 @@ static bool idtp9222_set_maxinput(/* @Nullable */ struct idtp9222_struct* idtp92
 static bool idtp9222_set_overheat(struct idtp9222_struct* idtp9222) {
 	#define TIMER_OVERHEAT_MS	3000
 	/* On shutdown by overheat during wireless charging, send EPT by OVERHEAT */
-	if (idtp9222->status_temperature >= idtp9222->configure_overheat) {
+	if (idtp9222->temperature >= idtp9222->configure_overheat) {
 		if (!idtp9222_is_onpad(idtp9222) || idtp9222->status_overheat)
 			return true;
 
@@ -448,11 +484,7 @@ static bool idtp9222_is_full(struct idtp9222_struct* idtp9222) {
 	bool status = idtp9222->status_full;
 
 	if (idtp9222_is_onpad(idtp9222)) {
-		u8 val = !status;
-		if (idtp9222_reg_read(idtp9222->wlc_client, REG_ADDR_EPT, &val))
-			pr_assert(status==!!val);
-
-		return status;
+		return idtp9222->status_full;
 	}
 	else {
 		pr_idt(IDT_VERBOSE, "idtp9222 is off now\n");
@@ -538,6 +570,7 @@ static bool psy_set_dcin(struct idtp9222_struct* idtp9222, bool dcin) {
 		#define UNVOTING_TIMER_MS 5000
 		if (idtp9222->status_dcin) {
 			idtp9222_set_overheat(idtp9222);
+			idtp9222_set_full(idtp9222);
 			rerun_election(idtp9222->wlc_voltage);
 
 			if (idtp9222->opmode_midpower) {
@@ -577,63 +610,45 @@ static bool psy_set_enable(struct idtp9222_struct* idtp9222, bool enable) {
 	return true;
 }
 
-static bool psy_set_full(struct idtp9222_struct* idtp9222, bool full) {
-	if (idtp9222_is_full(idtp9222) == full) {
-		pr_idt(IDT_VERBOSE, "status full is already set to %d\n", full);
+static bool psy_set_capacity(struct idtp9222_struct* idtp9222, int capacity) {
+	if (idtp9222->capacity == capacity) {
+		pr_idt(IDT_VERBOSE, "capacity is already set to %d\n", capacity);
 		return false;
 	}
 
-	if (!idtp9222_is_onpad(idtp9222)) {
-		pr_idt(IDT_VERBOSE, "idtp9222 is off now\n");
-		return false;
-	}
+	idtp9222->capacity = capacity;
 
-	if (full) {
-		switch (idtp9222->opmode_type) {
-		case WPC :
-			/* CS100 is special signal for some TX pads */
-			idtp9222_reg_write(idtp9222->wlc_client, REG_ADDR_CHGSTAT, 100);
-			idtp9222_reg_write(idtp9222->wlc_client, REG_ADDR_COMMAND, SEND_CHGSTAT);
-			pr_idt(IDT_UPDATE, "Sending CS100 to WPC pads for EoC\n");
-			break;
-		case PMA :
-			idtp9222_reg_write(idtp9222->wlc_client, REG_ADDR_EPT, EPT_BY_EOC);
-			idtp9222_reg_write(idtp9222->wlc_client, REG_ADDR_COMMAND, SEND_EPT);
-			pr_idt(IDT_UPDATE, "Sending EPT to PMA pads for EoC\n");
-			break;
-		default :
-			pr_idt(IDT_ERROR, "Is IDTP onpad really?\n");
-			break;
-		}
-	}
-	else
-		; // Nothing to do for !full
+	if (idtp9222_is_onpad(idtp9222))
+		idtp9222_set_capacity(idtp9222);
 
-	idtp9222->status_full = full;
 	return true;
 }
 
-static bool psy_set_capacity(struct idtp9222_struct* idtp9222, int capacity) {
-	if (idtp9222->status_capacity == capacity) {
-		pr_idt(IDT_VERBOSE, "status_capacity is already set to %d\n", capacity);
+static bool psy_set_capacity_raw(struct idtp9222_struct* idtp9222, int capacity_raw) {
+	if (idtp9222->capacity_raw == capacity_raw) {
+		pr_idt(IDT_VERBOSE, "capacity_raw is already set to %d\n", capacity_raw);
 		return false;
 	}
 
-	idtp9222->status_capacity = capacity;
-	idtp9222_set_capacity(idtp9222);
+	idtp9222->capacity_raw = capacity_raw;
+
+	if (idtp9222_is_onpad(idtp9222))
+		idtp9222_set_full(idtp9222);
+
 	return true;
 }
 
 static bool psy_set_temperature(struct idtp9222_struct* idtp9222, int temperature) {
-	if (idtp9222->status_temperature == temperature) {
-		pr_idt(IDT_VERBOSE, "status_temperature is already set to %d\n", temperature);
+	if (idtp9222->temperature == temperature) {
+		pr_idt(IDT_VERBOSE, "temperature is already set to %d\n", temperature);
 		return false;
 	}
 
-	pr_idt(IDT_UPDATE, "status_temperature %d -> %d\n",
-		idtp9222->status_temperature, temperature);
-	idtp9222->status_temperature = temperature;
-	idtp9222_set_overheat(idtp9222);
+	pr_idt(IDT_VERBOSE, "temp(%d->%d)\n", idtp9222->temperature, temperature);
+	idtp9222->temperature = temperature;
+
+	if (idtp9222_is_onpad(idtp9222))
+		idtp9222_set_overheat(idtp9222);
 
 	return true;
 }
@@ -651,6 +666,14 @@ static int psy_get_power(struct idtp9222_struct* idtp9222) {
 	}
 
 	return power;
+}
+
+static int psy_get_current_max(struct idtp9222_struct* idtp9222) {
+	if (idtp9222_is_onpad(idtp9222))
+		return idtp9222->opmode_midpower
+			? idtp9222->configure_eppcurr : idtp9222->configure_bppcurr;
+	else
+		return 0;
 }
 
 static int psy_get_voltage_max(struct idtp9222_struct* idtp9222) {
@@ -678,6 +701,7 @@ static enum power_supply_property psy_property_list [] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_POWER_NOW,
+	POWER_SUPPLY_PROP_CURRENT_MAX,
 	POWER_SUPPLY_PROP_VOLTAGE_MAX,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_CHARGE_DONE,
@@ -690,9 +714,6 @@ static int psy_property_set(struct power_supply* psy,
 	struct idtp9222_struct* idtp9222 = power_supply_get_drvdata(psy);
 
 	switch (prop) {
-	case POWER_SUPPLY_PROP_CHARGE_DONE:
-		psy_set_full(idtp9222, !!val->intval);
-		break;
 	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
 		psy_set_enable(idtp9222, !!val->intval);
 		break;
@@ -728,6 +749,9 @@ static int psy_property_get(struct power_supply* psy,
 		break;
 	case POWER_SUPPLY_PROP_POWER_NOW:
 		val->intval = psy_get_power(idtp9222);
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_MAX:
+		val->intval = psy_get_current_max(idtp9222);
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
 		val->intval = psy_get_voltage_max(idtp9222);
@@ -795,6 +819,9 @@ static void psy_external_changed(struct power_supply* psy_me) {
 	if (psy_battery) {
 		if (!power_supply_get_property(psy_battery, POWER_SUPPLY_PROP_CAPACITY, &value))
 			psy_set_capacity(idtp9222, value.intval);
+
+		if (!power_supply_get_property(psy_battery, POWER_SUPPLY_PROP_CAPACITY_RAW, &value))
+			psy_set_capacity_raw(idtp9222, value.intval);
 
 		power_supply_put(psy_battery);
 	}
@@ -977,12 +1004,22 @@ static irqreturn_t idtp9222_isr_detached(int irq, void* data) {
 
 static bool idtp9222_probe_devicetree(struct device_node* dnode,
 	struct idtp9222_struct* idtp9222) {
+	struct device_node* battery_supp =
+		of_find_node_by_name(NULL, "lge-battery-supplement");
 	int		buf = -1;
 
 	if (!dnode) {
 		pr_idt(IDT_ERROR, "dnode is null\n");
 		return false;
 	}
+
+/* Parse from the other DT */
+	if (!battery_supp
+		|| of_property_read_u32(battery_supp, "capacity-raw-full", &buf) < 0) {
+		pr_idt(IDT_ERROR, "capacity-raw-full is failed\n");
+		idtp9222->configure_rawfull = 247;
+	} else
+		idtp9222->configure_rawfull = buf;
 
 /* Parse GPIOs */
 	idtp9222->gpio_idtfault = of_get_named_gpio(dnode, "idt,gpio-idtfault", 0);

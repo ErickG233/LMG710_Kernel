@@ -62,6 +62,8 @@ static struct device_attribute dual_role_attrs[] = {
 #endif
 #ifdef CONFIG_LGE_USB_MOISTURE_DETECTION
 	DUAL_ROLE_ATTR(moisture_en),
+	DUAL_ROLE_ATTR(moisture_ux),
+	DUAL_ROLE_ATTR(moisture_usb),
 #endif
 };
 
@@ -87,7 +89,15 @@ static char *kstrdupcase(const char *str, gfp_t gfp, bool to_upper)
 	return ret;
 }
 
-static void dual_role_changed_work(struct work_struct *work);
+static void dual_role_changed_work(struct work_struct *work)
+{
+	struct dual_role_phy_instance *dual_role =
+	    container_of(work, struct dual_role_phy_instance,
+			 changed_work);
+
+	dev_dbg(&dual_role->dev, "%s\n", __func__);
+	kobject_uevent(&dual_role->dev.kobj, KOBJ_CHANGE);
+}
 
 void dual_role_instance_changed(struct dual_role_phy_instance *dual_role)
 {
@@ -258,8 +268,8 @@ static char *supported_modes_text[] = {
 
 /* current mode */
 static char *mode_text[] = {
-#ifdef CONFIG_LGE_USB
-	"ufp", "dfp", "fault", "none"
+#ifdef CONFIG_LGE_USB_MOISTURE_DETECTION
+	"ufp", "dfp", "fault", "fault_no_ux", "float", "none"
 #else
 	"ufp", "dfp", "none"
 #endif
@@ -267,8 +277,8 @@ static char *mode_text[] = {
 
 /* Power role */
 static char *pr_text[] = {
-#ifdef CONFIG_LGE_USB
-	"source", "sink", "fault", "none"
+#ifdef CONFIG_LGE_USB_MOISTURE_DETECTION
+	"source", "sink", "fault", "fault_no_ux", "float", "none"
 #else
 	"source", "sink", "none"
 #endif
@@ -277,7 +287,7 @@ static char *pr_text[] = {
 /* Data role */
 static char *dr_text[] = {
 #ifdef CONFIG_LGE_USB
-	"host", "device", "fault", "none"
+	"host", "device", "fault", "fault_no_ux", "float", "none"
 #else
 	"host", "device", "none"
 #endif
@@ -307,6 +317,13 @@ static char *pd_rev_text[] = {
 
 #ifdef CONFIG_LGE_USB_MOISTURE_DETECTION
 static char *moisture_en_text[] = {
+	"enable", "disable"
+};
+
+static char *moisture_ux_text[] = {
+	"enable", "disable"
+};
+static char *moisture_usb_text[] = {
 	"enable", "disable"
 };
 #endif
@@ -481,6 +498,22 @@ static ssize_t dual_role_show_property(struct device *dev,
 					moisture_en_text[value]);
 		else
 			return -EIO;
+	} else if (off == DUAL_ROLE_PROP_MOISTURE_UX) {
+		BUILD_BUG_ON(DUAL_ROLE_PROP_MOISTURE_UX_TOTAL !=
+			ARRAY_SIZE(moisture_ux_text));
+		if (value < DUAL_ROLE_PROP_MOISTURE_UX_TOTAL)
+			return snprintf(buf, PAGE_SIZE, "%s\n",
+					moisture_ux_text[value]);
+		else
+			return -EIO;
+	} else if (off == DUAL_ROLE_PROP_MOISTURE_USB) {
+		BUILD_BUG_ON(DUAL_ROLE_PROP_MOISTURE_USB_TOTAL !=
+			ARRAY_SIZE(moisture_usb_text));
+		if (value < DUAL_ROLE_PROP_MOISTURE_USB_TOTAL)
+			return snprintf(buf, PAGE_SIZE, "%s\n",
+					moisture_usb_text[value]);
+		else
+			return -EIO;
 #endif
 	} else
 		return -EIO;
@@ -533,6 +566,14 @@ static ssize_t dual_role_store_property(struct device *dev,
 	case DUAL_ROLE_PROP_MOISTURE_EN:
 		total = DUAL_ROLE_PROP_MOISTURE_EN_TOTAL;
 		text_array = moisture_en_text;
+		break;
+	case DUAL_ROLE_PROP_MOISTURE_UX:
+		total = DUAL_ROLE_PROP_MOISTURE_UX_TOTAL;
+		text_array = moisture_ux_text;
+		break;
+	case DUAL_ROLE_PROP_MOISTURE_USB:
+		total = DUAL_ROLE_PROP_MOISTURE_USB_TOTAL;
+		text_array = moisture_usb_text;
 		break;
 #endif
 	default:
@@ -672,17 +713,6 @@ out:
 	free_page((unsigned long)prop_buf);
 
 	return ret;
-}
-
-static void dual_role_changed_work(struct work_struct *work)
-{
-	struct dual_role_phy_instance *dual_role =
-	    container_of(work, struct dual_role_phy_instance,
-			 changed_work);
-
-	dev_dbg(&dual_role->dev, "%s\n", __func__);
-	sysfs_update_group(&dual_role->dev.kobj, &dual_role_attr_group);
-	kobject_uevent(&dual_role->dev.kobj, KOBJ_CHANGE);
 }
 
 /******************* Module Init ***********************************/

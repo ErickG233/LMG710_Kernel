@@ -12,6 +12,10 @@ config LGE_USB_GADGET
 	select LGE_USB_CONFIGFS_LAF
 	select LGE_USB_FACTORY
 	select LGE_USB_DIAG_LOCK
+	select LGE_USB_DIAG_LOCK_SPR if LGE_ONE_BINARY_SKU
+	select LGE_USB_DIAG_LOCK_TRF if LGE_ONE_BINARY_SKU
+	select LGE_USB_DIAG_LOCK_VZW if LGE_ONE_BINARY_SKU
+	select LGE_USB_GADGET_AUTORUN_VZW if LGE_ONE_BINARY_SKU
 	help
 	  Customized Android Gadget USB framework for
 	  LGE United PC host USB driver.
@@ -140,7 +144,18 @@ config LGE_USB_LGMD18
 	help
 	  Support moisture deteator in 2018.
 endchoice
-endif
+
+config LGE_USB_MOISTURE_DETECTION_NO_UX
+	bool "Do not support UX when detecting moisture"
+	help
+	  Say y if this must be needed.
+
+config LGE_USB_MOISTURE_DETECTION_USB_EN
+	bool "Allows USB when moisture is detected"
+	help
+	  Say y if this must be needed.
+
+endif # LGE_USB_MOISTURE_DETECTION
 
 config LGE_USB_COMPLIANCE_TEST
 	bool "USB Compliance test"

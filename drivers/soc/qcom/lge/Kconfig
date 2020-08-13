@@ -258,19 +258,19 @@ config MACH_SDM845_JUDYP_SPR
 	help
 	  Support for the Qualcomm SDM845 JUDYP_SPR device.
 
-config MACH_SDM845_BETA
-	bool "SDM845 BETA"
+config MACH_SDM845_CAYMANSLM
+	bool "SDM845 CAYMANSLM"
 	depends on ARCH_SDM845
 	select MACH_LGE
 	help
-	  Support for the Qualcomm SDM845 BETA device.
+	  Support for the Qualcomm SDM845 CAYMANSLM device.
 
-config MACH_SDM845_BETA_LAO_COM
-	bool "SDM845 bETA_LAO_COM"
+config MACH_SDM845_STYLE3LM_DCM_JP
+	bool "SDM845 STYLE3LM_DCM_JP"
 	depends on ARCH_SDM845
 	select MACH_LGE
 	help
-	  Support for the Qualcomm SDM845 BETA_LAO_COM device.
+	  Support for the Qualcomm SDM845 STYLE3LM_DCM_JP device.
 
 config LGE_BOOTLOADER_LOG
 	tristate "Support LGE bootloader log"
@@ -345,7 +345,7 @@ config LGE_QSDL_SUPPORT
 
 config LGE_PSTORE_BACKUP
 	tristate "Support pstore backup"
-	default y
+	default n
 	depends on MACH_LGE
 	help
 	  Ramoops region is backed up to pstore partition
@@ -363,6 +363,12 @@ config LGE_ONE_BINARY_SKU
 	depends on MACH_LGE
 	help
 	  LGE One Binary sku carrier
+
+config LGE_DUAL_SCREEN
+        bool "Support Dual Screen"
+        depends on MACH_LGE
+        help
+          Say 'y" here to include support for dual screen.
 
 config LGE_MME_BUS
         bool "Clock booster for LGE MME"
@@ -393,6 +399,13 @@ config LGE_DM_VERITY_RECOVERY
 	help
 	  Sometimes, dm-bufio has invalid data. If data is corrupted,
 	  try to recover data.
+
+config LGE_POWEROFF_TIMEOUT
+	bool "Support shutdown and reboot timeout"
+	depends on MACH_LGE
+	default y
+	help
+	  Say 'y" here to include support for shutdown and reboot timeout.
 
 endmenu
 

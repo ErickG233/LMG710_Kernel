@@ -26,6 +26,7 @@ enum lge_blmap_type {
 	LGE_BLMAP_HBM_HD,
 	LGE_BLMAP_VE,
 	LGE_BLMAP_EX,
+	LGE_BLMAP_HDR,
 	LGE_BLMAP_TYPE_MAX
 };
 #endif // _LGE_BACKLIGHT_DEF_H_

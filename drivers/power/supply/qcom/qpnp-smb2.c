@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2018 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2019 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -170,6 +170,7 @@ struct smb_dt_props {
 	bool	hvdcp_disable;
 	bool	auto_recharge_soc;
 	int	wd_bark_time;
+	bool	no_pd;
 };
 
 struct smb2 {
@@ -232,6 +233,9 @@ static int smb2_parse_dt(struct smb2 *chip)
 		return -EINVAL;
 	}
 
+	chg->reddragon_ipc_wa = of_property_read_bool(node,
+				"qcom,qcs605-ipc-wa");
+
 	chg->step_chg_enabled = of_property_read_bool(node,
 				"qcom,step-charging-enable");
 
@@ -245,6 +249,9 @@ static int smb2_parse_dt(struct smb2 *chip)
 
 	chip->dt.no_battery = of_property_read_bool(node,
 						"qcom,batteryless-platform");
+
+	chip->dt.no_pd = of_property_read_bool(node,
+						"qcom,pd-not-supported");
 
 	rc = of_property_read_u32(node,
 				"qcom,fcc-max-ua", &chg->batt_profile_fcc_ua);
@@ -349,6 +356,9 @@ static int smb2_parse_dt(struct smb2 *chip)
 	chg->disable_stat_sw_override = of_property_read_bool(node,
 					"qcom,disable-stat-sw-override");
 
+	chg->fcc_stepper_enable = of_property_read_bool(node,
+					"qcom,fcc-stepping-enable");
+
 	return 0;
 }
 
@@ -383,6 +393,10 @@ static enum power_supply_property smb2_usb_props[] = {
 	POWER_SUPPLY_PROP_SDP_CURRENT_MAX,
 	POWER_SUPPLY_PROP_CONNECTOR_TYPE,
 	POWER_SUPPLY_PROP_MOISTURE_DETECTED,
+#ifdef CONFIG_LGE_USB_MOISTURE_DETECTION
+	POWER_SUPPLY_PROP_MOISTURE_DETECTION_UX,
+	POWER_SUPPLY_PROP_MOISTURE_DETECTION_USB,
+#endif
 };
 
 static int smb2_usb_get_prop(struct power_supply *psy,
@@ -508,6 +522,14 @@ static int smb2_usb_get_prop(struct power_supply *psy,
 		val->intval = get_client_vote(chg->disable_power_role_switch,
 					      MOISTURE_VOTER);
 		break;
+#ifdef CONFIG_LGE_USB_MOISTURE_DETECTION
+	case POWER_SUPPLY_PROP_MOISTURE_DETECTION_UX:
+		val->intval = chg->moisture_ux;
+		break;
+	case POWER_SUPPLY_PROP_MOISTURE_DETECTION_USB:
+		val->intval = chg->moisture_usb;
+		break;
+#endif
 	default:
 		pr_err("get prop %d is not supported in usb\n", psp);
 		rc = -EINVAL;
@@ -590,6 +612,14 @@ static int smb2_usb_set_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_SDP_CURRENT_MAX:
 		rc = smblib_set_prop_sdp_current_max(chg, val);
 		break;
+#ifdef CONFIG_LGE_USB_MOISTURE_DETECTION
+	case POWER_SUPPLY_PROP_MOISTURE_DETECTION_UX:
+		chg->moisture_ux = val->intval;
+		break;
+	case POWER_SUPPLY_PROP_MOISTURE_DETECTION_USB:
+		chg->moisture_usb = val->intval;
+		break;
+#endif
 	default:
 		pr_err("set prop %d is not supported\n", psp);
 		rc = -EINVAL;
@@ -1112,6 +1142,7 @@ static enum power_supply_property smb2_batt_props[] = {
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_CYCLE_COUNT,
+	POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE,
 };
 
 static int smb2_batt_get_prop(struct power_supply *psy,
@@ -1222,9 +1253,16 @@ static int smb2_batt_get_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
 	case POWER_SUPPLY_PROP_CYCLE_COUNT:
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-	case POWER_SUPPLY_PROP_CURRENT_NOW:
 	case POWER_SUPPLY_PROP_TEMP:
 		rc = smblib_get_prop_from_bms(chg, psp, val);
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_NOW:
+		rc = smblib_get_prop_from_bms(chg, psp, val);
+		if (!rc)
+			val->intval *= (-1);
+		break;
+	case POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE:
+		val->intval = chg->fcc_stepper_enable;
 		break;
 	default:
 		pr_err("batt power supply prop %d not supported\n", psp);
@@ -1600,6 +1638,13 @@ static int smb2_configure_typec(struct smb_charger *chg)
 		return rc;
 	}
 
+	/* Set CC threshold to 1.6 V in source mode */
+	rc = smblib_masked_write(chg, TYPE_C_CFG_2_REG, DFP_CC_1P4V_OR_1P6V_BIT,
+				 DFP_CC_1P4V_OR_1P6V_BIT);
+	if (rc < 0)
+		dev_err(chg->dev,
+			"Couldn't configure CC threshold voltage rc=%d\n", rc);
+
 #ifdef CONFIG_LGE_USB
 	/* reduce DRP.DFP time when some resistance is connected */
 	rc = smblib_masked_write(chg, TAPER_TIMER_SEL_CFG_REG,
@@ -1769,7 +1814,8 @@ static int smb2_init_hw(struct smb2 *chip)
 			true, 0);
 	vote(chg->pd_disallowed_votable_indirect, HVDCP_TIMEOUT_VOTER,
 			true, 0);
-
+	vote(chg->pd_disallowed_votable_indirect, PD_NOT_SUPPORTED_VOTER,
+			chip->dt.no_pd, 0);
 	/*
 	 * AICL configuration:
 	 * start from min, disable AICL ADC and allow AICL rerun
@@ -2566,6 +2612,15 @@ static int smb2_probe(struct platform_device *pdev)
 	chg->die_health = -EINVAL;
 	chg->name = "PMI";
 	chg->audio_headset_drp_wait_ms = &__audio_headset_drp_wait_ms;
+#ifdef CONFIG_LGE_USB_MOISTURE_DETECTION
+#ifdef CONFIG_LGE_USB_MOISTURE_DETECTION_NO_UX
+	chg->moisture_ux = 0;
+	chg->moisture_usb = 1;
+#else
+	chg->moisture_ux = 1;
+	chg->moisture_usb = 0;
+#endif
+#endif
 
 	chg->regmap = dev_get_regmap(chg->dev->parent, NULL);
 	if (!chg->regmap) {
@@ -2722,6 +2777,17 @@ static int smb2_probe(struct platform_device *pdev)
 
 	// Change cx min voltage level on chargerlogo boot
 	workaround_blocking_vddmin_chargerlogo(chg);
+
+	/* Disable HVDCP */
+	if (of_property_read_bool(chg->dev->of_node, "lge,hvdcp-disable-user")) {
+		extern bool unified_bootmode_usermode(void);
+		if (unified_bootmode_usermode()) {
+			pr_info("QPNP SMB2 Disable HVDCP by hvdcp-disable-user\n");
+			vote(chg->hvdcp_disable_votable_indirect, DEFAULT_VOTER, true, 0);
+		} else {
+			pr_info("QPNP SMB2 Enable HVDCP by hvdcp-disable-user\n");
+		}
+	}
 #endif
 	pr_info("QPNP SMB2 probed successfully usb:present=%d type=%d batt:present = %d health = %d charge = %d\n",
 		usb_present, chg->real_charger_type,

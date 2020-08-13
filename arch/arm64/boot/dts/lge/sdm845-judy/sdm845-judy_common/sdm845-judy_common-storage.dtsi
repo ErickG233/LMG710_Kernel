@@ -53,3 +53,20 @@
 	status = "ok";
 };
 
+&firmware {
+	android {
+		compatible = "android,firmware";
+		fstab {
+			compatible = "android,fstab";
+			drm {
+				compatible = "android,drm";
+				dev = "/dev/block/platform/soc/1d84000.ufshc/by-name/drm";
+				type = "ext4";
+				mnt_point = "/mnt/vendor/persist-lg";
+				mnt_flags = "noatime,nosuid,nodev,barrier=1,data=ordered,noauto_da_alloc,errors=continue";
+				fsmgr_flags = "wait,formattable";
+				status = "ok";
+			};
+		};
+	};
+};

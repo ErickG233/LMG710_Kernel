@@ -366,7 +366,7 @@ fci_s32 fc8080_spi_bulkwrite(HANDLE handle, fci_u16 addr, fci_u8 *data, fci_u16 
 
 fci_s32 fc8080_spi_dataread(HANDLE handle, fci_u16 addr, fci_u8 *data, fci_u32 length)
 {
-    fci_s32 res;
+    fci_s32 res = 0;
     fci_u8 command = SPI_READ | SPI_RD_THRESH;
 
     mutex_lock(&lock);

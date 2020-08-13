@@ -56,7 +56,7 @@
 		>;
 
 		tempcomp-offset-wlc-enable;
-		tempcomp-offset-wlc-rise-filter-enable;
+//		tempcomp-offset-wlc-rise-filter-enable;
 		tempcomp-offset-wlc-rise-filter-trigger = <430>;
 		tempcomp-offset-wlc-lcdoff = <
 			(-300) (-54)
@@ -114,9 +114,10 @@
 			900    (-11)
 		>;
 
-		tempcomp-qnovo-charging;
+//		tempcomp-qnovo-charging;
 		lg-monotonic-soc-enable;
 
+		tempcomp-smooth-filter-enable;
 		tempcomp-icoeff = <100>;
 		/* overriding by battery type */
 		LGE_BLT37_LGC_3300mAh {
@@ -283,8 +284,6 @@
 };
 
 &pmi8998_qnovo {
-	qcom,enable-for-dc;
-
 	lge,enable-qni-debounce;
 	lge,qni-debounce-time = <900000>;
 	lge,qni-debounce-soc = <229>;
@@ -307,8 +306,9 @@
 &qupv3_se12_i2c {
 	idtp9222-charger@61 {
 		// FOD parameters
-		idt,fod-bpp = [CF 28 91 2E 9D 19 AA 03 A6 FB AD E8 14 00 00 00];
-		idt,fod-epp = [CF 31 8E 44 8A 46 9A 19 9A 0A A1 E7 14 00 64 32];
+		idt,fod-addr = [70 71 72 73 74 75 76 77 78 79 7A 7B 7C 7D 7E 7F];
+		idt,fod-bpp  = [CF 28 91 2E 9D 19 AA 03 A6 FB AD E8 14 00 00 00];
+		idt,fod-epp  = [CF 31 8E 44 8A 46 9A 19 9A 0A A1 E7 14 00 64 32];
 	};
 };
 

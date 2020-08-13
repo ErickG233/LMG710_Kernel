@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,9 +18,11 @@
 #include "cam_sensor_util.h"
 #include "cam_debug_util.h"
 #include "cam_res_mgr_api.h"
+#include "cam_common_util.h"
+#include "cam_packet_util.h"
 
 #define LIMIT_STATUS_POLLING	(15)
-#if defined (CONFIG_MACH_SDM845_JUDYPN) || defined (CONFIG_MACH_SDM845_BETA)
+#if defined (CONFIG_MACH_SDM845_JUDYPN) || defined (CONFIG_MACH_SDM845_STYLE3LM_DCM_JP)
 extern int32_t lgit_imx363_init_set_onsemi_ois(struct cam_ois_ctrl_t *o_ctrl);
 extern int lgit_imx363_onsemi_ois_poll_ready(int limit);
 #else
@@ -95,7 +97,7 @@ static int cam_ois_get_dev_handle(struct cam_ois_ctrl_t *o_ctrl,
 		CAM_ERR(CAM_OIS, "Device is already acquired");
 		return -EFAULT;
 	}
-	if (copy_from_user(&ois_acq_dev, (void __user *) cmd->handle,
+	if (copy_from_user(&ois_acq_dev, u64_to_user_ptr(cmd->handle),
 		sizeof(ois_acq_dev)))
 		return -EFAULT;
 
@@ -111,7 +113,7 @@ static int cam_ois_get_dev_handle(struct cam_ois_ctrl_t *o_ctrl,
 	o_ctrl->bridge_intf.session_hdl = ois_acq_dev.session_handle;
 
 	CAM_DBG(CAM_OIS, "Device Handle: %d", ois_acq_dev.device_handle);
-	if (copy_to_user((void __user *) cmd->handle, &ois_acq_dev,
+	if (copy_to_user(u64_to_user_ptr(cmd->handle), &ois_acq_dev,
 		sizeof(struct cam_sensor_acquire_dev))) {
 		CAM_ERR(CAM_OIS, "ACQUIRE_DEV: copy to user failed");
 		return -EFAULT;
@@ -270,7 +272,7 @@ static int cam_ois_apply_settings(struct cam_ois_ctrl_t *o_ctrl,
 			}
 		} else if (i2c_list->op_code == CAM_SENSOR_I2C_POLL) {
 /* LGE_CHANGE_S, use LGE POLL function, 2018-01-16, hongs.lee@lge.com */
-#if defined (CONFIG_MACH_SDM845_JUDYPN) || defined (CONFIG_MACH_SDM845_BETA)
+#if defined (CONFIG_MACH_SDM845_JUDYPN) || defined (CONFIG_MACH_SDM845_STYLE3LM_DCM_JP)
 			rc = lgit_imx363_onsemi_ois_poll_ready(LIMIT_STATUS_POLLING);
 #else
 			rc = lgit_imx351_rohm_ois_poll_ready(LIMIT_STATUS_POLLING);
@@ -306,12 +308,12 @@ static int cam_ois_apply_settings(struct cam_ois_ctrl_t *o_ctrl,
 }
 
 static int cam_ois_slaveInfo_pkt_parser(struct cam_ois_ctrl_t *o_ctrl,
-	uint32_t *cmd_buf)
+	uint32_t *cmd_buf, size_t len)
 {
 	int32_t rc = 0;
 	struct cam_cmd_ois_info *ois_info;
 
-	if (!o_ctrl || !cmd_buf) {
+	if (!o_ctrl || !cmd_buf || len < sizeof(struct cam_cmd_ois_info)) {
 		CAM_ERR(CAM_OIS, "Invalid Args");
 		return -EINVAL;
 	}
@@ -325,7 +327,8 @@ static int cam_ois_slaveInfo_pkt_parser(struct cam_ois_ctrl_t *o_ctrl,
 		o_ctrl->ois_fw_flag = ois_info->ois_fw_flag;
 		o_ctrl->is_ois_calib = ois_info->is_ois_calib;
 		o_ctrl->is_ois_aat = ois_info->is_ois_aat; /* LGE_CHANGE_S, OIS AAT, hongs.lee@lge.com */
-		memcpy(o_ctrl->ois_name, ois_info->ois_name, 32);
+		memcpy(o_ctrl->ois_name, ois_info->ois_name, OIS_NAME_LEN);
+		o_ctrl->ois_name[OIS_NAME_LEN - 1] = '\0';
 		o_ctrl->io_master_info.cci_client->retries = 3;
 		o_ctrl->io_master_info.cci_client->id_map = 0;
 		memcpy(&(o_ctrl->opcode), &(ois_info->opcode),
@@ -477,13 +480,14 @@ static int cam_ois_pkt_parse(struct cam_ois_ctrl_t *o_ctrl, void *arg)
 	int32_t                         i = 0;
 	uint32_t                        total_cmd_buf_in_bytes = 0;
 	struct common_header           *cmm_hdr = NULL;
-	uint64_t                        generic_ptr;
+	uintptr_t                       generic_ptr;
 	struct cam_control             *ioctl_ctrl = NULL;
 	struct cam_config_dev_cmd       dev_config;
 	struct i2c_settings_array      *i2c_reg_settings = NULL;
 	struct cam_cmd_buf_desc        *cmd_desc = NULL;
-	uint64_t                        generic_pkt_addr;
+	uintptr_t                       generic_pkt_addr;
 	size_t                          pkt_len;
+	size_t                          remain_len = 0;
 	struct cam_packet              *csl_packet = NULL;
 	size_t                          len_of_buff = 0;
 	uint32_t                       *offset = NULL, *cmd_buf;
@@ -493,26 +497,38 @@ static int cam_ois_pkt_parse(struct cam_ois_ctrl_t *o_ctrl, void *arg)
 	struct cam_cmd_ois_userdata *ois_userdata; /* LGE_CHANGE, 2018-09-11, OIS,AF Driver update for LG EIS, yonghwan.lym@lge.com */
 
 	ioctl_ctrl = (struct cam_control *)arg;
-	if (copy_from_user(&dev_config, (void __user *) ioctl_ctrl->handle,
+	if (copy_from_user(&dev_config,
+		u64_to_user_ptr(ioctl_ctrl->handle),
 		sizeof(dev_config)))
 		return -EFAULT;
 	rc = cam_mem_get_cpu_buf(dev_config.packet_handle,
-		(uint64_t *)&generic_pkt_addr, &pkt_len);
+		&generic_pkt_addr, &pkt_len);
 	if (rc) {
 		CAM_ERR(CAM_OIS,
 			"error in converting command Handle Error: %d", rc);
 		return rc;
 	}
 
-	if (dev_config.offset > pkt_len) {
+	remain_len = pkt_len;
+	if ((sizeof(struct cam_packet) > pkt_len) ||
+		((size_t)dev_config.offset >= pkt_len -
+		sizeof(struct cam_packet))) {
 		CAM_ERR(CAM_OIS,
 			"offset is out of bound: off: %lld len: %zu",
 			dev_config.offset, pkt_len);
 		return -EINVAL;
 	}
 
+	remain_len -= (size_t)dev_config.offset;
 	csl_packet = (struct cam_packet *)
-		(generic_pkt_addr + dev_config.offset);
+		(generic_pkt_addr + (uint32_t)dev_config.offset);
+
+	if (cam_packet_util_validate_packet(csl_packet,
+		remain_len)) {
+		CAM_ERR(CAM_OIS, "Invalid packet params");
+		return -EINVAL;
+	}
+
 	switch (csl_packet->header.op_code & 0xFFFFFF) {
 	case CAM_OIS_PACKET_OPCODE_INIT:
 		offset = (uint32_t *)&csl_packet->payload;
@@ -526,7 +542,7 @@ static int cam_ois_pkt_parse(struct cam_ois_ctrl_t *o_ctrl, void *arg)
 				continue;
 
 			rc = cam_mem_get_cpu_buf(cmd_desc[i].mem_handle,
-				(uint64_t *)&generic_ptr, &len_of_buff);
+				&generic_ptr, &len_of_buff);
 			if (rc < 0) {
 				CAM_ERR(CAM_OIS, "Failed to get cpu buf");
 				return rc;
@@ -536,13 +552,22 @@ static int cam_ois_pkt_parse(struct cam_ois_ctrl_t *o_ctrl, void *arg)
 				CAM_ERR(CAM_OIS, "invalid cmd buf");
 				return -EINVAL;
 			}
+
+			if ((len_of_buff < sizeof(struct common_header)) ||
+				(cmd_desc[i].offset > (len_of_buff -
+				sizeof(struct common_header)))) {
+				CAM_ERR(CAM_OIS,
+					"Invalid length for sensor cmd");
+				return -EINVAL;
+			}
+			remain_len = len_of_buff - cmd_desc[i].offset;
 			cmd_buf += cmd_desc[i].offset / sizeof(uint32_t);
 			cmm_hdr = (struct common_header *)cmd_buf;
 
 			switch (cmm_hdr->cmd_type) {
 			case CAMERA_SENSOR_CMD_TYPE_I2C_INFO:
 				rc = cam_ois_slaveInfo_pkt_parser(
-					o_ctrl, cmd_buf);
+					o_ctrl, cmd_buf, remain_len);
 				if (rc < 0) {
 					CAM_ERR(CAM_OIS,
 					"Failed in parsing slave info");
@@ -556,7 +581,7 @@ static int cam_ois_pkt_parse(struct cam_ois_ctrl_t *o_ctrl, void *arg)
 				rc = cam_sensor_update_power_settings(
 					cmd_buf,
 					total_cmd_buf_in_bytes,
-					power_info);
+					power_info, remain_len);
 				if (rc) {
 					CAM_ERR(CAM_OIS,
 					"Failed: parse power settings");
@@ -642,7 +667,7 @@ static int cam_ois_pkt_parse(struct cam_ois_ctrl_t *o_ctrl, void *arg)
 
 		//rc = cam_ois_apply_settings(o_ctrl, &o_ctrl->i2c_init_data); // QCT original , need to block code for judy
 		CAM_ERR(CAM_OIS, "FW Downloading again");
-#if defined (CONFIG_MACH_SDM845_JUDYPN) || defined (CONFIG_MACH_SDM845_BETA)
+#if defined (CONFIG_MACH_SDM845_JUDYPN) || defined (CONFIG_MACH_SDM845_STYLE3LM_DCM_JP)
 		rc = lgit_imx363_init_set_onsemi_ois(o_ctrl);
 #else
 		rc = lgit_imx351_init_set_rohm_ois(o_ctrl);
@@ -728,7 +753,7 @@ static int cam_ois_pkt_parse(struct cam_ois_ctrl_t *o_ctrl, void *arg)
 			break;
 		}
 		rc = cam_mem_get_cpu_buf(cmd_desc[0].mem_handle,
-				(uint64_t *)&generic_ptr, &len_of_buff);
+				&generic_ptr, &len_of_buff);
 		if (rc < 0) {
 			CAM_ERR(CAM_OIS, "Failed to get cpu buf");
 			return rc;
@@ -836,7 +861,7 @@ int cam_ois_driver_cmd(struct cam_ois_ctrl_t *o_ctrl, void *arg)
 	case CAM_QUERY_CAP:
 		ois_cap.slot_info = o_ctrl->soc_info.index;
 
-		if (copy_to_user((void __user *) cmd->handle,
+		if (copy_to_user(u64_to_user_ptr(cmd->handle),
 			&ois_cap,
 			sizeof(struct cam_ois_query_cap_t))) {
 			CAM_ERR(CAM_OIS, "Failed Copy to User");

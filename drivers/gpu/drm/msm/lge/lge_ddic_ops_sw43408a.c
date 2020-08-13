@@ -54,16 +54,6 @@ const struct drs_res_info sw43408a_res[3] = {
 #define PRESET_SETP1_INDEX 5
 #define PRESET_SETP2_INDEX 12
 
-enum {
-	screen_mode_auto = 0,
-	screen_mode_cinema,
-	screen_mode_photos,
-	screen_mode_web,
-	screen_mode_sports,
-	screen_mode_game,
-	screen_mode_expert = 10,
-};
-
 static int rgb_preset[STEP_DG_PRESET][RGB_ALL] = {
 	{PRESET_SETP2_INDEX, PRESET_SETP0_INDEX, PRESET_SETP2_INDEX},
 	{PRESET_SETP1_INDEX, PRESET_SETP0_INDEX, PRESET_SETP1_INDEX},
@@ -193,7 +183,7 @@ static void adjust_roi(struct dsi_panel *panel, int *sr, int *er)
 	if (type == num) {
 		pr_err("invalid height\n");
 		*sr = 0;
-		*er = panel->cur_mode->timing.h_active - 1;
+		*er = panel->cur_mode->timing.v_active - 1;
 		return;
 	}
 
@@ -203,7 +193,7 @@ static void adjust_roi(struct dsi_panel *panel, int *sr, int *er)
 		goto full_roi;
 	}
 
-	*sr = panel->lge.aod_area.y;
+	*sr = ((panel->lge.aod_area.y >> 2) << 2) + 1;
 	*er = *sr + panel->lge.aod_area.h - 1;
 
 	return;
@@ -603,7 +593,7 @@ static void lge_display_control_store_sw43408a(struct dsi_panel *panel, bool sen
 
 	/* HDR_ON & ASE_ON */
 	dispctrl2_payload[1] &= 0xF4;
-	dispctrl2_payload[1] |= ((panel->lge.ve_mode) |
+	dispctrl2_payload[1] |= ((panel->lge.ddic_hdr) |
 					(panel->lge.color_manager_status << 1) |
 					(panel->lge.sharpness_status << 3));
 
@@ -621,6 +611,92 @@ static void lge_display_control_store_sw43408a(struct dsi_panel *panel, bool sen
 
 	mutex_unlock(&panel->panel_lock);
 	return;
+}
+
+static int lge_send_true_view_mode_cmd_sw43408a(struct dsi_panel *panel, int idx)
+{
+	int rc = 0;
+	bool is_turn_off = true;
+
+	if (!panel) {
+		pr_err("invalid ctrl data\n");
+		return -EINVAL;
+	}
+
+	if (!dsi_panel_initialized(panel)) {
+		pr_err("Panel off state. Ignore screen_mode set cmd\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&panel->panel_lock);
+
+	if ((idx > TRUE_VIEW_MAX_STEP) || (idx < 0)) {
+		pr_err("invalid index=%d\n", idx);
+		rc = -EINVAL;
+		goto exit;
+	} else {
+		int dgctrl1_idx = (idx << 1);
+		int dgctrl2_idx = dgctrl1_idx + 1;
+		int dummy_idx = LGE_DDIC_DSI_DISP_DG_COMMAND_DUMMY;
+		int dg_set_idx = LGE_DDIC_DSI_DIGITAL_GAMMA_SET;
+		char *dst, *src;
+		int cnt;
+
+		pr_info("[cct idx=%d] dgctrl1=%d, dgctrl2=%d\n", idx, dgctrl1_idx, dgctrl2_idx);
+
+		dst = (char *)panel->lge.lge_cmd_sets[dummy_idx].cmds[1].msg.tx_buf;
+		src = (char *)panel->lge.lge_cmd_sets[dg_set_idx].cmds[dgctrl1_idx].msg.tx_buf;
+		cnt = (int)panel->lge.lge_cmd_sets[dummy_idx].cmds[1].msg.tx_len;
+		if (src == NULL || dst == NULL) {
+			mutex_unlock(&panel->panel_lock);
+			return -EINVAL;
+		}
+		memcpy(dst, src, cnt);
+
+		dst = (char *)panel->lge.lge_cmd_sets[dummy_idx].cmds[2].msg.tx_buf;
+		src = (char *)panel->lge.lge_cmd_sets[dg_set_idx].cmds[dgctrl2_idx].msg.tx_buf;
+		cnt = (int)panel->lge.lge_cmd_sets[dummy_idx].cmds[2].msg.tx_len;
+		if (src == NULL || dst == NULL) {
+			mutex_unlock(&panel->panel_lock);
+			return -EINVAL;
+		}
+		memcpy(dst, src, cnt);
+
+		if (idx > 0)
+			is_turn_off = false;
+	}
+
+	if (is_turn_off) {
+		mutex_unlock(&panel->panel_lock);
+		panel->lge.ddic_ops->lge_set_screen_mode(panel, true);
+		mutex_lock(&panel->panel_lock);
+	} else
+		lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_DISP_DG_COMMAND_DUMMY);
+
+exit:
+	mutex_unlock(&panel->panel_lock);
+	return rc;
+}
+
+static void lge_set_true_view_mode_sw43408a(struct dsi_panel *panel, bool send_cmd)
+{
+	mutex_lock(&panel->panel_lock);
+	if (panel->lge.hdr_mode) {
+		mutex_unlock(&panel->panel_lock);
+		pr_info("skip true view set on HDR play\n");
+		return;
+	}
+	if (panel->lge.true_view_mode == 0) {
+		panel->lge.dgc_status = 0x00;
+	} else {
+		panel->lge.dgc_status = 0x01;
+	}
+	mutex_unlock(&panel->panel_lock);
+
+	if (send_cmd)
+		lge_send_true_view_mode_cmd_sw43408a(panel, panel->lge.true_view_mode);
+
+	lge_display_control_store_sw43408a(panel, send_cmd);
 }
 
 static void lge_set_screen_tune_sw43408a(struct dsi_panel *panel)
@@ -884,15 +960,23 @@ static void lge_set_brightness_dim_sw43408a(struct dsi_panel *panel, int input)
 	lge_bc_dim_set_sw43408a(panel, BC_DIM_ON, bc_dim_f_cnt);
 }
 
+static void lge_update_ddic_hdr_status(struct dsi_panel *panel)
+{
+	panel->lge.ddic_hdr = !!(panel->lge.ve_hdr | panel->lge.ace_hdr);
+	pr_info("hdr %d ve_hdr %d ace_hdr %d \n", panel->lge.ddic_hdr, panel->lge.ve_hdr, panel->lge.ace_hdr);
+}
+
 static void lge_set_video_enhancement_sw43408a(struct dsi_panel *panel, int input)
 {
 	int rc = 0;
 	bool enable = false;
 
-	panel->lge.ve_mode = input;
-	enable = !!panel->lge.ve_mode;
-
 	mutex_lock(&panel->panel_lock);
+
+	panel->lge.ve_hdr = input;
+	lge_update_ddic_hdr_status(panel);
+	enable = panel->lge.ddic_hdr;
+
 	if (enable) {
 		rc = lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_VIDEO_ENHANCEMENT_ON);
 		if (rc)
@@ -926,6 +1010,7 @@ static void lge_set_video_enhancement_sw43408a(struct dsi_panel *panel, int inpu
 static int set_pps_cmds_sw43408a(struct dsi_panel *panel, enum lge_ddic_dsi_cmd_set_type type)
 {
 	struct msm_display_dsc_info *dsc;
+	int pps_height;
 
 	if (!panel) {
 		pr_err("panel is null\n");
@@ -942,11 +1027,13 @@ static int set_pps_cmds_sw43408a(struct dsi_panel *panel, enum lge_ddic_dsi_cmd_
 	case LGE_DDIC_DSI_SET_LP1:
 	case LGE_DDIC_DSI_SET_LP2:
 	case LGE_DDIC_DSI_AOD_AREA:
+		pps_height = (panel->lge.aod_area.h >= panel->cur_mode->timing.v_active)?
+			panel->cur_mode->timing.v_active:panel->lge.aod_area.h;
 		pr_info("LP2: pic_height : %d -> %d\n",
 				dsc->pic_height,
-				panel->lge.aod_area.h);
+				pps_height);
 		panel->lge.pps_orig = dsc->pic_height;
-		dsc->pic_height = panel->lge.aod_area.h;
+		dsc->pic_height = pps_height;
 		break;
 	case LGE_DDIC_DSI_SET_NOLP:
 		pr_info("NOLP: pic_height : %d -> %d\n",
@@ -981,6 +1068,7 @@ static int unset_pps_cmds_sw43408a(struct dsi_panel *panel, enum lge_ddic_dsi_cm
 	switch (type) {
 	case LGE_DDIC_DSI_SET_LP1:
 	case LGE_DDIC_DSI_SET_LP2:
+	case LGE_DDIC_DSI_AOD_AREA:
 	case LGE_DDIC_DSI_SET_NOLP:
 		pr_info("pic_height : %d -> %d\n",
 				dsc->pic_height,
@@ -1063,9 +1151,14 @@ int lge_set_irc_state_sw43408a(struct dsi_panel *panel, enum lge_irc_mode mode, 
 	lge_update_irc_state(panel, mode, enable);
 	new_state = !!panel->lge.irc_current_state;
 
+	if(!panel->lge.use_irc_ctrl) {
+		pr_info("go to ace set\n");
+		goto ace_set;
+	}
+
 	if (prev_state == new_state) {
 		pr_info("same state, skip=(%d,%d)\n", prev_state, new_state);
-		goto exit;
+		goto ace_set;
 	}
 
 	cmd = &(panel->lge.lge_cmd_sets[LGE_DDIC_DSI_IRC_CTRL].cmds[1]);
@@ -1084,19 +1177,21 @@ int lge_set_irc_state_sw43408a(struct dsi_panel *panel, enum lge_irc_mode mode, 
 
 	lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_IRC_CTRL);
 
-exit:
+ace_set:
 	panel->lge.irc_pending = false;
 	if ((mode == LGE_GLOBAL_IRC_HBM) && panel->lge.use_ace_ctrl) {
 		if (enable == LGE_IRC_OFF) {
 			panel->lge.ace_mode = 0;
-			panel->lge.ve_mode = 1;
+			panel->lge.ace_hdr = 1;
+			lge_update_ddic_hdr_status(panel);
 			lge_ddic_dsi_panel_tx_cmd_set(panel, LGE_DDIC_DSI_ACE_TUNE);
 			mutex_unlock(&panel->panel_lock);
 			lge_display_control_store_sw43408a(panel, true);
 			mutex_lock(&panel->panel_lock);
 		} else {
 			panel->lge.ace_mode = 3;
-			panel->lge.ve_mode = 0;
+			panel->lge.ace_hdr = 0;
+			lge_update_ddic_hdr_status(panel);
 			mutex_unlock(&panel->panel_lock);
 			lge_display_control_store_sw43408a(panel, true);
 			mutex_lock(&panel->panel_lock);
@@ -1133,15 +1228,43 @@ int hdr_mode_set_sw43408a(struct dsi_panel *panel, int input)
 	mutex_lock(&panel->panel_lock);
 	if (hdr_mode) {
 		panel->lge.color_manager_status = 0;
+		switch (panel->lge.screen_mode) {
+		case screen_mode_auto:
+			if (panel->lge.cm_preset_step == 2 &&
+				!(panel->lge.cm_red_step | panel->lge.cm_green_step | panel->lge.cm_blue_step)) {
+				panel->lge.dgc_status = 0x00;
+			} else {
+				panel->lge.dgc_status = 0x01;
+			}
+			break;
+		case screen_mode_expert:
+			panel->lge.dgc_status = 0x00;
+			break;
+		case screen_mode_sports:
+		case screen_mode_game:
+		case screen_mode_cinema:
+		case screen_mode_photos:
+		case screen_mode_web:
+		default:
+			panel->lge.dgc_status = 0x01;
+			break;
+		}
 	} else {
 		panel->lge.color_manager_status = 1;
 	}
 	mutex_unlock(&panel->panel_lock);
+	pr_info("hdr=%s, cm=%s dgc=%s\n", (hdr_mode ? "set" : "unset"),
+			((panel->lge.color_manager_status == 1) ? "enabled" : "disabled"),
+			((panel->lge.dgc_status == 1) ? "enabled" : "disabled"));
 
-	pr_info("hdr=%s, cm=%s\n", (hdr_mode ? "set" : "unset"),
-			((panel->lge.color_manager_status == 1) ? "enabled" : "disabled"));
+	if(hdr_mode) {
+		lge_display_control_store_sw43408a(panel, true);
+	} else {
+		lge_set_screen_mode_sw43408a(panel, true);
+		if(panel->lge.true_view_mode)
+			lge_set_true_view_mode_sw43408a(panel, true);
+	}
 
-	lge_display_control_store_sw43408a(panel, true);
 	if (panel->lge.use_irc_ctrl) {
 		if (hdr_mode) {
 			lge_set_irc_state_sw43408a(panel, LGE_GLOBAL_IRC_HDR, LGE_IRC_OFF);
@@ -1150,6 +1273,8 @@ int hdr_mode_set_sw43408a(struct dsi_panel *panel, int input)
 		}
 	}
 
+	lge_backlight_device_update_status(panel->bl_config.bd);
+
 	return 0;
 }
 
@@ -1157,30 +1282,32 @@ struct lge_ddic_ops sw43408a_ops = {
 	.store_aod_area = store_aod_area,
 	.prepare_aod_cmds = prepare_aod_cmds_sw43408a,
 	.prepare_aod_area = prepare_aod_area_sw43408a,
-	.hdr_mode_set = hdr_mode_set_sw43408a,
-	.bist_ctrl = control_bist_cmds_sw43408a,
-	.release_bist = release_bist_cmds_sw43408a,
-	.get_current_res = get_current_resolution_sw43408a,
-	.get_support_res = get_support_resolution_sw43408a,
-	.err_detect_work = err_detect_work_sw43408a,
-	.err_detect_irq_handler = err_detect_irq_handler_sw43408a,
-	.set_err_detect_mask = set_err_detect_mask_sw43408a,
-	.lge_set_custom_rgb = lge_set_custom_rgb_sw43408a,
 	.lge_display_control_store = lge_display_control_store_sw43408a,
-	.lge_set_screen_tune = lge_set_screen_tune_sw43408a,
-	.lge_set_screen_mode = lge_set_screen_mode_sw43408a,
-	.sharpness_set = sharpness_set_sw43408a,
 	.lge_bc_dim_set = lge_bc_dim_set_sw43408a,
 	.lge_set_therm_dim = lge_set_therm_dim_sw43408a,
 	.lge_get_brightness_dim = lge_get_brightness_dim_sw43408a,
 	.lge_set_brightness_dim = lge_set_brightness_dim_sw43408a,
+	.lge_set_custom_rgb = lge_set_custom_rgb_sw43408a,
+	.lge_set_screen_tune = lge_set_screen_tune_sw43408a,
+	.lge_set_screen_mode = lge_set_screen_mode_sw43408a,
 	.lge_set_video_enhancement = lge_set_video_enhancement_sw43408a,
+	.sharpness_set = sharpness_set_sw43408a,
+	.hdr_mode_set = hdr_mode_set_sw43408a,
+	.set_irc_state = lge_set_irc_state_sw43408a,
+	.get_irc_state = lge_get_irc_state_sw43408a,
+	.set_irc_default_state = lge_set_irc_default_state_sw43408a,
+	.bist_ctrl = control_bist_cmds_sw43408a,
+	.release_bist = release_bist_cmds_sw43408a,
+	.get_current_res = get_current_resolution_sw43408a,
+	.get_support_res = get_support_resolution_sw43408a,
 	.set_pps_cmds = set_pps_cmds_sw43408a,
 	.unset_pps_cmds = unset_pps_cmds_sw43408a,
 	.lge_check_vert_black_line = lge_check_vert_black_line_sw43408a,
 	.lge_check_vert_white_line = lge_check_vert_white_line_sw43408a,
 	.lge_check_vert_line_restore = lge_check_vert_line_restore_sw43408a,
-	.set_irc_default_state = lge_set_irc_default_state_sw43408a,
-	.set_irc_state = lge_set_irc_state_sw43408a,
-	.get_irc_state = lge_get_irc_state_sw43408a,
+	.err_detect_work = err_detect_work_sw43408a,
+	.err_detect_irq_handler = err_detect_irq_handler_sw43408a,
+	.set_err_detect_mask = set_err_detect_mask_sw43408a,
+	.lge_set_true_view_mode = NULL,
+	/*.lge_vr_lp_mode_set = NULL,*/
 };

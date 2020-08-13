@@ -2840,9 +2840,6 @@ static bool sd_validate_opt_xfer_size(struct scsi_disk *sdkp,
 	if (sdkp->opt_xfer_blocks == 0)
 		return false;
 
-	if (sdkp->opt_xfer_blocks == 0)
-		return false;
-
 	if (sdkp->opt_xfer_blocks > dev_max) {
 		sd_first_printk(KERN_WARNING, sdkp,
 				"Optimal transfer size %u logical blocks " \
@@ -3363,6 +3360,17 @@ static int sd_remove(struct device *dev)
 {
 	struct scsi_disk *sdkp;
 	dev_t devt;
+
+#ifdef CONFIG_LGE_BDI_STRICTLIMIT_DIRTY
+#ifdef CONFIG_SCSI_DEVICE_IDENTIFIER
+	struct scsi_device *sdp;
+	sdp = to_scsi_device(dev);
+	if (sdp && sdp->request_queue && !sdp->host->by_ufs) {
+		bdi_set_min_ratio(sdp->request_queue->backing_dev_info, 0);
+		bdi_set_max_ratio(sdp->request_queue->backing_dev_info, 100);
+	}
+#endif
+#endif
 
 	sdkp = dev_get_drvdata(dev);
 	devt = disk_devt(sdkp->disk);

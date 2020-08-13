@@ -8,6 +8,7 @@
 
 #include <linux/thermal.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
 #include "veneer-primitives.h"
 
 #define LGE_FG_INITVAL -1
@@ -43,7 +44,6 @@ struct _fginfo {
 	int impedance_rslow;
 /* Misc */
 	int misc_cycle;
-	int misc_batid;
 /* SoCs */
 	int misc_battsoc;
 	int misc_ccsocsw;
@@ -78,11 +78,71 @@ struct _rescale {
 	int	result;		// 0 ~ 100
 };
 
+struct smooth_param {
+/*
+ * To update batt_therm immediately when wakeup from suspend,
+ * using below flag in suspend/resume callback
+ */
+	bool		smooth_filter_enable;
+	bool		batt_therm_ready;
+	bool		enable_flag;
+	int		therm_backup;
+	ktime_t		last_time;
+};
+
 enum tcomp_chg_type {
 	TCOMP_CHG_NONE = 0,
 	TCOMP_CHG_USB,
 	TCOMP_CHG_WLC_LCDOFF,
 	TCOMP_CHG_WLC_LCDON
+};
+
+enum vote_direction {
+	VOTE_INIT = -4,
+	VOTE_NONE,
+	VOTE_SUSPEND,
+	VOTE_DECREASE,
+	VOTE_STAY,
+	VOTE_INCREASE,
+	VOTE_ELECTION,
+};
+
+enum current_thres {
+	HIGH_CURR = 0,
+	MED_CURR,
+	LOW_CURR,
+	UNIT_KI,
+};
+
+enum limit_ki {
+	MIN_KI = 0,
+	MAX_KI,
+	KI_COEFF_LIMIT,
+};
+
+#define BACKUP_MAX_CNT		6
+#define LOOP_TIME_NORMAL	10
+#define LOOP_TIME_ALERT		5
+
+#define CHANGE_POINT		50
+#define CHANGE_POINT_INC	100
+#define SCALING_FACTOR_INC	2
+
+struct ki_coeff_param {
+	enum vote_direction	backup_vote;
+	bool reach_vfloat;
+	bool chg_enable;
+	bool dischg_enable;
+	int ki_dischg[UNIT_KI][UNIT_KI];
+	int ki_chg[UNIT_KI];
+	int loop_cnt;
+	int stay_cnt;
+	int soc_alert;
+	int ki_limit[KI_COEFF_LIMIT];
+	int ki_comp;
+	int ki_comp_bck;
+	int margin_vfloat_mv;
+	struct mutex direction_lock;
 };
 
 /* Gloval variable for extension-fg-gen4 */
@@ -99,7 +159,7 @@ static struct _fginfo fggen3 = {
                 LGE_FG_INITVAL,
 /* Temp      */ LGE_FG_INITVAL, LGE_FG_INITVAL, -1000,
 /* impedance */ LGE_FG_INITVAL, LGE_FG_INITVAL,
-/* Misc      */ LGE_FG_INITVAL, LGE_FG_INITVAL,
+/* Misc      */ LGE_FG_INITVAL,
 /* SoCs      */ LGE_FG_INITVAL, LGE_FG_INITVAL, LGE_FG_INITVAL,
 };
 
@@ -127,6 +187,27 @@ static struct _rescale rescale = {
 	.result = LGE_FG_INITVAL,
 };
 
+static struct smooth_param smooth_therm = {
+	.smooth_filter_enable = false,
+	.batt_therm_ready = false,
+	.enable_flag = false,
+	.therm_backup = 0,
+	.last_time.tv64 = 0,
+};
+
+static struct ki_coeff_param ki_coeff = {
+	.backup_vote = VOTE_INIT,
+	.reach_vfloat = false,
+	.chg_enable = false,
+	.dischg_enable = false,
+	.loop_cnt = 0,
+	.stay_cnt = 0,
+	.soc_alert = 0,
+	.ki_comp = 0,
+	.ki_comp_bck = 0,
+	.margin_vfloat_mv = 0,
+};
+
 static int get_charging_type(struct fg_chip *chip)
 {
 	union power_supply_propval val = { 0, };
@@ -134,7 +215,7 @@ static int get_charging_type(struct fg_chip *chip)
 
 	if (chip->batt_psy) {
 		if (!power_supply_get_property(chip->batt_psy,
-			POWER_SUPPLY_PROP_STATUS, &val))
+			POWER_SUPPLY_PROP_STATUS_RAW, &val))
 			if (val.intval != POWER_SUPPLY_STATUS_CHARGING)
 				return TCOMP_CHG_NONE;
 	}
@@ -198,11 +279,11 @@ static int get_batt_temp_current(struct fg_chip *chip)
 								val.intval / -1000 : ichg;
 				goto out;
 			} else {
-				/* if charging current is over -25mA,
+				/* if charging current is over 25mA,
 					batt_therm compensation current keeps the previous value */
 				if (!power_supply_get_property(chip->batt_psy,
 						POWER_SUPPLY_PROP_CURRENT_NOW, &val) &&
-							val.intval < -25000)
+							val.intval > 25000)
 					ichg = val.intval / 1000;
 
 				goto out;
@@ -282,6 +363,47 @@ static int filtered_batt_therm(bool changed, int comp, int batt)
 	return battemp_comp;
 }
 
+#define TEMP_CATCHUP_SEC_MAX		150
+#define TEMP_CATCHUP_SEC_PER_DEGREE	30
+#define MAX_CATCHUP_TEMP (TEMP_CATCHUP_SEC_MAX/TEMP_CATCHUP_SEC_PER_DEGREE)
+#define TEMP_UPDATE_TIME_SEC		5
+#define DIVIDE_TEMP			10
+#define DIVIDE_MS_TO_S			1000
+
+static void catchup_batt_therm(int temp, int temp_backup, int ts_diff)
+{
+	int catchup_time_s = 0, catchup_temp = 0, change_therm = 0;
+
+	change_therm = abs(temp - temp_backup);
+	if ((change_therm / DIVIDE_TEMP) < MAX_CATCHUP_TEMP)
+		catchup_time_s = change_therm * TEMP_CATCHUP_SEC_PER_DEGREE / DIVIDE_TEMP;
+	else
+		catchup_time_s = TEMP_CATCHUP_SEC_MAX;
+
+	if (catchup_time_s <= 0)
+		catchup_time_s = 1;
+
+	ts_diff++;
+	/* Scaling temp in case of time_diff < catchup_time */
+	if (ts_diff <= catchup_time_s) {
+		catchup_temp = ((catchup_time_s - ts_diff)*temp_backup + (ts_diff * temp))/catchup_time_s;
+
+		pr_info("catchup_temp ts_diff:%d, catchup_time_s:%d, "
+			"temp:%d, therm_backup:%d, result_temp:%d\n",
+			ts_diff, catchup_time_s,
+			temp, temp_backup, catchup_temp);
+		smooth_therm.therm_backup = catchup_temp;
+	}
+	/* Out of target time, doesn't scaling */
+	else {
+		pr_info("catchup_skip ts_diff:%d, catchup_time_s:%d, "
+			"temp:%d, therm_backup:%d, result_temp:%d\n",
+			ts_diff, catchup_time_s,
+			temp, temp_backup, temp);
+		smooth_therm.therm_backup = temp;
+	}
+}
+
 /* calculate_battery_temperature
  *     bias  : 1st compensation by predefined diffs
  *     icomp : 2nd compensation by (i^2 * k)
@@ -293,7 +415,35 @@ static int calculate_battery_temperature(/* @Nonnull */ struct fg_chip *chip)
 	union power_supply_propval val = { 0, };
 	bool tbl_changed = false;
 	static int pre_tbl_pt = -1;
+	int ts_diff = 0;
+	ktime_t now;
 
+	if (smooth_therm.smooth_filter_enable) {
+		/* Check now ktime */
+		now = ktime_get();
+
+		if ((smooth_therm.last_time.tv64 == 0 && smooth_therm.therm_backup == 0)
+					|| !smooth_therm.batt_therm_ready) {
+			smooth_therm.last_time = now;
+			pr_debug("Initialize time and temp, ts=%lld, backup=%d, ready=%d\n",
+					smooth_therm.last_time.tv64, smooth_therm.therm_backup,
+					smooth_therm.batt_therm_ready);
+			smooth_therm.enable_flag = false;
+			goto skip_time;
+		}
+
+		ts_diff = ((unsigned long)ktime_ms_delta(now, smooth_therm.last_time)/DIVIDE_MS_TO_S);
+
+		/* Update batt_therm every 1sec */
+		if (ts_diff < TEMP_UPDATE_TIME_SEC) {
+			pr_debug("ts_diff(%d) is lower than UPDATE_SEC. now(%lld), ts_bef(%lld)\n",
+					ts_diff, now.tv64, smooth_therm.last_time.tv64);
+			goto out_temp;
+		}
+		if (!smooth_therm.enable_flag)
+			smooth_therm.enable_flag = true;
+	}
+skip_time:
 	if (fg_get_battery_temp(chip, &battemp_cell)){
 		pr_info("get real batt therm error\n");
 		return LGE_FG_INITVAL;
@@ -308,6 +458,9 @@ static int calculate_battery_temperature(/* @Nonnull */ struct fg_chip *chip)
 		pr_info("not ready icoeff. raw temp=%d\n", battemp_cell);
 		return battemp_cell;
 	}
+
+	if (!smooth_therm.batt_therm_ready)
+		smooth_therm.batt_therm_ready = true;
 
 	if (tcomp.load_max > 1) {
 		switch (get_charging_type(chip)) {
@@ -354,7 +507,7 @@ static int calculate_battery_temperature(/* @Nonnull */ struct fg_chip *chip)
 				&& val.intval == POWER_SUPPLY_STATUS_CHARGING
 				&& !power_supply_get_property(
 					chip->batt_psy, POWER_SUPPLY_PROP_CURRENT_NOW, &val)
-				&& val.intval < 0)
+				&& val.intval > 0)
 				ichg = ((val.intval) / 1000);
 		}
 	} else {
@@ -367,7 +520,7 @@ static int calculate_battery_temperature(/* @Nonnull */ struct fg_chip *chip)
 
 	if (tcomp.logging)
 		pr_info("Battery temperature : "
-				"%d = (%d)(cell) + (%d)(bias) - %d(icomp), "
+				"%d = %d (cell) + %d (bias) - %d (icomp), "
 				"icoeff = %d, ichg = %d\n",
 			temp, battemp_cell, battemp_bias, battemp_icomp,
 			tcomp.icoeff, ichg);
@@ -375,7 +528,22 @@ static int calculate_battery_temperature(/* @Nonnull */ struct fg_chip *chip)
 	if (tcomp.rise_cut || tcomp.fall_cut)
 		return filtered_batt_therm(tbl_changed, temp, battemp_cell);
 
-	return temp;
+	if (smooth_therm.smooth_filter_enable) {
+		if (smooth_therm.enable_flag) {
+			catchup_batt_therm(temp, smooth_therm.therm_backup, ts_diff);
+			smooth_therm.last_time = now;
+		}
+		/* In some cases, Using default batt_therm */
+		else {
+			smooth_therm.therm_backup = temp;
+		}
+	}
+	else {
+		return temp;
+	}
+
+out_temp:
+	return smooth_therm.therm_backup;
 }
 
 #define LGE_FG_CHARGING         1
@@ -399,7 +567,7 @@ static int  lge_is_fg_charging(struct fg_chip *chip)
 
 	if (!power_supply_get_property(chip->batt_psy,
 					POWER_SUPPLY_PROP_CURRENT_NOW, &val)) {
-		if (val.intval < -25000 )
+		if (val.intval > 25000 )
 			return LGE_FG_CHARGING;
 		else
 			return LGE_FG_DISCHARGING;
@@ -478,22 +646,20 @@ static void fggen3_snapshot_print(void) {
 	/* To remove TAG in the logs, 'printk' is used */
 
 	printk("PMINFO: [CSV] "
-	/* Capacity    */ "cSYS:%d, cMNT:%d.%d, cCHG:%d, cLRN:%d, "
+	/* Capacity    */ "cSYS:%d, cMNT:%d, cCHG:%d, cLRN:%d, "
 	/* v/i ADCs    */ "iBAT:%d, vBAT:%d, vPRD:%d, vOCV:%d, vUSB:%d, iUSB:%d, vWLC:%d, iWCL:%d, AiCL:%d, "
 	/* Temperature */ "tSYS:%d, tORI:%d, tVTS:%d, "
 	/* Impedance   */ "rTOT:%d, rESR:%d, rSLW:%d, "
-	/* Misc        */ "CYCLE:%d, BATID:%d, "
+	/* Misc        */ "CYCLE:%d, "
 	/* SoCs        */ "sBATT:%d, sCCSW:%d, sCC:%d\n",
 
-	/* Capacity    */ fggen3.capacity_rescaled,
-			  fggen3.capacity_monotonic/10, fggen3.capacity_monotonic%10,
-			  fggen3.capacity_chargecnt, fggen3.capacity_learned,
+	/* Capacity    */ fggen3.capacity_rescaled*10, fggen3.capacity_monotonic, fggen3.capacity_chargecnt, fggen3.capacity_learned,
 	/* Battery     */ fggen3.battery_inow, fggen3.battery_vnow, fggen3.battery_vpredict, fggen3.battery_ocv,
 	/* Input       */ fggen3.input_vusb, fggen3.input_iusb, fggen3.input_vwlc, fggen3.input_iwlc, fggen3.input_aicl,
 	/* Temperature */ fggen3.temp_compensated, fggen3.temp_thermister, fggen3.temp_vts,
 	/* Impedance   */ fggen3.impedance_esr + fggen3.impedance_rslow,
 			  fggen3.impedance_esr, fggen3.impedance_rslow,
-	/* Misc        */ fggen3.misc_cycle, fggen3.misc_batid,
+	/* Misc        */ fggen3.misc_cycle,
 	/* SoCs        */ fggen3.misc_battsoc, fggen3.misc_ccsocsw, fggen3.misc_ccsoc);
 }
 
@@ -571,9 +737,6 @@ static void fggen3_snapshot_update(struct power_supply *psy) {
 	fggen3.misc_cycle = !power_supply_get_property(fg3->fg_psy,
 			POWER_SUPPLY_PROP_CYCLE_COUNT, &val)
 		? val.intval : LGE_FG_INITVAL;
-
-	fggen3.misc_batid
-		= fg3->batt_id_ohms / 1000;
 /* SoCs */
 	fggen3.misc_battsoc = !fg_get_sram_prop(fg3, FG_SRAM_BATT_SOC, &buf)
 		? ((u32)buf >> 24)*1000/255 : LGE_FG_INITVAL;
@@ -588,22 +751,17 @@ static void fggen3_snapshot_update(struct power_supply *psy) {
 
 #define KI_CURR_LOWTH_DISCHG_DEFAULT	500
 #define KI_CURR_HIGHTH_DISCHG_DEFAULT	1000
-#define KI_COEFF_LOW_DISCHG_DEFAULT	800
-#define KI_COEFF_MED_DISCHG_DEFAULT	1500
-#define KI_COEFF_HI_DISCHG_DEFAULT	2200
-int override_fg_adjust_ki_coeff_dischg(struct fg_chip *chip)
+int override_fg_adjust_ki_coeff_dischg(struct fg_chip *chip, int ki_low, int ki_med, int ki_high)
 {
 	int rc, i, msoc;
 	int ki_curr_lowth = KI_CURR_LOWTH_DISCHG_DEFAULT;
 	int ki_curr_highth = KI_CURR_HIGHTH_DISCHG_DEFAULT;
-	int ki_coeff_low = KI_COEFF_LOW_DISCHG_DEFAULT;
-	int ki_coeff_med = KI_COEFF_MED_DISCHG_DEFAULT;
-	int ki_coeff_hi = KI_COEFF_HI_DISCHG_DEFAULT;
+	int ki_coeff_low = -1, ki_coeff_med = -1, ki_coeff_hi = -1;
 	int cutoff_volt = chip->dt.cutoff_volt_mv;
 	int cutoff_curr = chip->dt.cutoff_curr_ma;
-	static int old_ki_coeff_low = 0;
-	static int old_ki_coeff_med = 0;
-	static int old_ki_coeff_hi = 0;
+	static int old_ki_coeff_low = -1;
+	static int old_ki_coeff_med = -1;
+	static int old_ki_coeff_hi = -1;
 	u8 buf[4], val;
 
 	if (!chip->ki_coeff_dischg_en)
@@ -615,7 +773,8 @@ int override_fg_adjust_ki_coeff_dischg(struct fg_chip *chip)
 		return rc;
 	}
 
-	if (chip->esr_flt_sts == LOW_TEMP &&
+	if (!(chip->dt.dynamic_ki_en) &&
+		chip->esr_flt_sts == LOW_TEMP &&
 		chip->charge_status == POWER_SUPPLY_STATUS_DISCHARGING) {
 		cutoff_volt = chip->dt.cutoff_lt_volt_mv;
 		cutoff_curr = chip->dt.cutoff_lt_curr_ma;
@@ -626,13 +785,19 @@ int override_fg_adjust_ki_coeff_dischg(struct fg_chip *chip)
 				ki_coeff_low = chip->dt.ki_coeff_low_dischg[i];
 				ki_coeff_med = chip->dt.ki_coeff_med_dischg[i];
 				ki_coeff_hi = chip->dt.ki_coeff_hi_dischg[i];
+				break;
 			}
 		}
 	}
+	else {
+		ki_coeff_low = ki_low;
+		ki_coeff_med = ki_med;
+		ki_coeff_hi = ki_high;
+	}
 
-	if (old_ki_coeff_low == ki_coeff_low
-		&& old_ki_coeff_med == ki_coeff_med
-		&& old_ki_coeff_hi == ki_coeff_hi)
+	if ((old_ki_coeff_low == ki_coeff_low)
+		&& (old_ki_coeff_med == ki_coeff_med)
+		&& (old_ki_coeff_hi == ki_coeff_hi))
 		return 0;
 
 	old_ki_coeff_low = ki_coeff_low;
@@ -764,9 +929,49 @@ int override_fg_parse_for_battery_charactistics(struct fg_chip *chip, struct dev
 	return 0;
 }
 
+static void polling_voltage_gap(struct work_struct *work);
+
 int override_fg_parse_ki_coefficient(struct fg_chip *chip, struct device_node *node)
 {
 	int rc, i, temp;
+
+	chip->dt.dynamic_ki_en = of_property_read_bool(node, "lge,dynamic-ki-en");
+	if (chip->dt.dynamic_ki_en) {
+		ki_coeff.chg_enable = of_property_read_bool(node,
+			"lge,ki-coeff-chg-enable");
+		ki_coeff.dischg_enable = of_property_read_bool(node,
+			"lge,ki-coeff-dischg-enable");
+		rc = of_property_read_u32(node,
+			"lge,ki-coeff-soc-alert", &ki_coeff.soc_alert);
+		if (rc < 0)
+			ki_coeff.soc_alert = 0;
+		rc = of_property_read_u32(node,
+			"lge,ki-coeff-comp", &ki_coeff.ki_comp);
+		if (rc < 0)
+			ki_coeff.ki_comp = 200;
+		ki_coeff.ki_comp_bck = ki_coeff.ki_comp;
+		rc = of_property_read_u32(node,
+			"lge,ki-coeff-margin-vfloat-mv", &ki_coeff.margin_vfloat_mv);
+		if (rc < 0)
+			ki_coeff.margin_vfloat_mv = 0;
+		rc = fg_parse_dt_property_u32_array(node, "lge,ki-coeff-limit",
+			ki_coeff.ki_limit, KI_COEFF_LIMIT);
+		if (rc < 0) {
+			ki_coeff.ki_limit[MIN_KI] = 0;
+			ki_coeff.ki_limit[MAX_KI] = 5000;
+		}
+
+		mutex_init(&ki_coeff.direction_lock);
+		INIT_DELAYED_WORK(&chip->polling_voltage_gap_dwork, polling_voltage_gap);
+		schedule_delayed_work(&chip->polling_voltage_gap_dwork, msecs_to_jiffies(5000));
+
+		pr_info("dynamic:enabled chg:%d dischg:%d soc_alert:%d "
+					"comp:%d margin:%d limit:<%d %d>\n",
+				ki_coeff.chg_enable, ki_coeff.dischg_enable, ki_coeff.soc_alert,
+				ki_coeff.ki_comp, ki_coeff.margin_vfloat_mv,
+				ki_coeff.ki_limit[MIN_KI], ki_coeff.ki_limit[MAX_KI]);
+
+	}
 
 	rc = of_property_read_u32(node, "qcom,ki-coeff-full-dischg", &temp);
 	if (!rc)
@@ -799,6 +1004,10 @@ int override_fg_parse_ki_coefficient(struct fg_chip *chip, struct device_node *n
 		chip->dt.ki_coeff_hi_dischg, KI_COEFF_SOC_LEVELS);
 	if (rc < 0)
 		return rc;
+
+	rc = of_property_read_u32(node, "lge,ki-coeff-hi-chg", &temp);
+	if (!rc)
+		chip->dt.ki_coeff_hi_chg = temp;
 
 	for (i = 0; i < KI_COEFF_SOC_LEVELS; i++) {
 		if (chip->dt.ki_coeff_soc[i] < 0 ||
@@ -837,7 +1046,7 @@ int override_fg_parse_ki_coefficient(struct fg_chip *chip, struct device_node *n
 #define PROPERTY_BYPASS_REASON_NOENTRY	ENOENT
 #define PROPERTY_BYPASS_REASON_ONEMORE	EAGAIN
 
-static int workaround_backup_bms_property[POWER_SUPPLY_PROP_BATTERY_TYPE];
+static int workaround_backup_bms_property[POWER_SUPPLY_PROP_CYCLE_COUNTS + 1];
 
 static enum power_supply_property extension_bms_appended [] = {
 	POWER_SUPPLY_PROP_CYCLE_COUNT,
@@ -928,7 +1137,23 @@ static int extension_bms_get_property_pre(struct power_supply *psy,
 
 static int extension_bms_get_property_post(struct power_supply *psy,
 	enum power_supply_property prop, union power_supply_propval *val, int rc) {
-	workaround_backup_bms_property[prop] = val->intval;
+
+	switch (prop) {
+	case POWER_SUPPLY_PROP_RESISTANCE:
+	case POWER_SUPPLY_PROP_VOLTAGE_OCV:
+	case POWER_SUPPLY_PROP_CHARGE_NOW_RAW:
+	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+	case POWER_SUPPLY_PROP_CHARGE_COUNTER_SHADOW:
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
+	case POWER_SUPPLY_PROP_TIME_TO_FULL_AVG:
+	case POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG:
+		workaround_backup_bms_property[prop] = val->intval;
+		break;
+
+	default:
+		break;
+	}
+
 	return rc;
 }
 
@@ -1042,6 +1267,335 @@ int extension_bms_property_is_writeable(struct power_supply *psy,
 		rc = fg_property_is_writeable(psy, prop);
 		break;
 	}
+	return rc;
+}
+
+static int extension_fg_gen3_set_ki_coeff_chg(struct fg_chip *chip)
+{
+	int rc;
+	u8 val;
+	static int old_ki_chg_hi = -1;
+
+	if (old_ki_chg_hi == ki_coeff.ki_chg[HIGH_CURR])
+		return 0;
+
+	fg_encode(chip->sp, FG_SRAM_KI_COEFF_HI_CHG,
+		ki_coeff.ki_chg[HIGH_CURR], &val);
+	rc = fg_sram_write(chip,
+		chip->sp[FG_SRAM_KI_COEFF_HI_CHG].addr_word,
+		chip->sp[FG_SRAM_KI_COEFF_HI_CHG].addr_byte, &val,
+		chip->sp[FG_SRAM_KI_COEFF_HI_CHG].len,
+		FG_IMA_DEFAULT);
+	if (rc < 0) {
+		pr_err("Error in writing ki_coeff_hi_chg, rc=%d\n", rc);
+		return rc;
+	}
+	old_ki_chg_hi= ki_coeff.ki_chg[HIGH_CURR];
+	fg_dbg(chip, FG_LGE,
+		"Wrote [ki_coeff_chg: hi=%d]-[status:%s]\n",
+		old_ki_chg_hi,
+		(chip->charge_status == POWER_SUPPLY_STATUS_DISCHARGING) ? "DISC": "CHG");
+
+	return rc;
+}
+
+static void polling_voltage_gap(struct work_struct *work)
+{
+	struct fg_chip *chip = container_of(work, struct fg_chip,
+			polling_voltage_gap_dwork.work);
+	static int backup_gap[BACKUP_MAX_CNT] = {0, };
+	int buf = 0, volt_predict = 0, volt_batt = 0, i = 0, msoc = 0;
+	int total_gap = 0, slope_volt_gap = 0, real_slope = 0;
+	int schedule_time_s = 0;
+	bool quick_update = false;
+	enum vote_direction direction = VOTE_STAY;
+
+	if (ki_coeff.backup_vote == VOTE_INIT)
+		goto out_init_polling;
+
+	if (rescale.result < 0)
+		goto out_polling;
+	msoc = rescale.result;
+
+	volt_batt = !fg_get_battery_voltage(chip, &buf)
+		? buf / 1000 : LGE_FG_INITVAL;
+	volt_predict = !fg_get_sram_prop(chip, FG_SRAM_VOLTAGE_PRED, &buf)
+		? buf / 1000 : LGE_FG_INITVAL;
+
+	if (volt_predict >= (chip->bp.vbatt_full_mv - ki_coeff.margin_vfloat_mv)) {
+		volt_predict = min(chip->bp.vbatt_full_mv, volt_predict);
+		ki_coeff.reach_vfloat = true;
+	}
+	else {
+		ki_coeff.reach_vfloat = false;
+	}
+
+	if (msoc < ki_coeff.soc_alert)
+		quick_update = true;
+
+	if (ki_coeff.loop_cnt == BACKUP_MAX_CNT)
+		ki_coeff.loop_cnt--;
+
+	for (i = ki_coeff.loop_cnt ; i > 0 ; i--) {
+		backup_gap[i] = backup_gap[i-1];
+		total_gap += backup_gap[i];
+	}
+
+	ki_coeff.loop_cnt = min(ki_coeff.loop_cnt+1, BACKUP_MAX_CNT);
+	backup_gap[0] = volt_batt - volt_predict;
+	total_gap += backup_gap[0];
+	if (quick_update) {
+		slope_volt_gap = (total_gap*CHANGE_POINT_INC) / (BACKUP_MAX_CNT*LOOP_TIME_ALERT);
+		real_slope = (total_gap*CHANGE_POINT_INC) / (ki_coeff.loop_cnt*LOOP_TIME_ALERT);
+		schedule_time_s = LOOP_TIME_ALERT * 1000;
+	}
+	else {
+		slope_volt_gap = (total_gap*CHANGE_POINT_INC) / (BACKUP_MAX_CNT*LOOP_TIME_NORMAL);
+		real_slope = (total_gap*CHANGE_POINT_INC) / (ki_coeff.loop_cnt*LOOP_TIME_NORMAL);
+		schedule_time_s = LOOP_TIME_NORMAL * 1000;
+	}
+
+	pr_debug("vbat:%d vPredict:%d, backup_gap=[%d %d %d %d %d %d]\n",
+		volt_batt, volt_predict, backup_gap[0], backup_gap[1],
+		backup_gap[2], backup_gap[3], backup_gap[4], backup_gap[5]);
+	pr_debug("slope(%d) = total_gap(%d)*100 (%d) / (6)*5 (30)\n",
+			slope_volt_gap, total_gap, total_gap*100);
+
+	switch(chip->charge_status) {
+	case POWER_SUPPLY_STATUS_CHARGING:
+		if (!(ki_coeff.chg_enable))
+			goto out_polling;
+
+		if (slope_volt_gap >= (CHANGE_POINT))
+		//have to increase vpredict -> down KI for dischg
+			direction = VOTE_DECREASE;
+		else if (slope_volt_gap < (CHANGE_POINT_INC*-1)/(quick_update ? SCALING_FACTOR_INC : 1))
+		//have to decrease vpredict -> raise KI for dischg
+			direction = VOTE_INCREASE;
+		else
+			direction = VOTE_STAY;
+
+		if (direction == VOTE_STAY) {
+			ki_coeff.stay_cnt++;
+			if (ki_coeff.stay_cnt >= BACKUP_MAX_CNT) {
+				direction = VOTE_DECREASE;
+				ki_coeff.stay_cnt = 0;
+			}
+		}
+		else {
+			ki_coeff.stay_cnt = 0;
+		}
+
+		if (ki_coeff.reach_vfloat)
+			direction = max(direction-1, VOTE_DECREASE);
+
+		break;
+	case POWER_SUPPLY_STATUS_DISCHARGING:
+		if (!(ki_coeff.dischg_enable))
+			goto out_polling;
+
+		if (slope_volt_gap >= (CHANGE_POINT))
+		//have to increase vpredict -> raise KI for dischg
+			direction = VOTE_INCREASE;
+		else if (slope_volt_gap < (CHANGE_POINT_INC*-1)/(quick_update ? SCALING_FACTOR_INC : 1))
+		//have to decrease vpredict -> down KI for dischg
+			direction = VOTE_DECREASE;
+		else
+			direction = VOTE_STAY;
+
+		if (quick_update && (direction != VOTE_STAY)) {
+			//At low soc, we directly call below function
+			ki_coeff.ki_comp = ki_coeff.ki_comp_bck*abs(real_slope)/10;
+			ki_coeff.backup_vote = direction;
+			extension_fg_gen3_set_ki_coeff(chip);
+		}
+		else if (ki_coeff.ki_comp != ki_coeff.ki_comp_bck){
+			ki_coeff.ki_comp = ki_coeff.ki_comp_bck;
+		}
+
+		break;
+	default:
+		direction = VOTE_STAY;
+		break;
+	}
+	pr_info("direction=%d, backup=%d, tot_gap=%d, cnt=%d, slope=%d, real_slope=%d, "
+			"vfloat=%d, stay=%d, alert=%d, charge=%s\n",
+			direction, ki_coeff.backup_vote, total_gap, ki_coeff.loop_cnt, slope_volt_gap,
+			real_slope, ki_coeff.reach_vfloat, ki_coeff.stay_cnt, quick_update,
+			(chip->charge_status == POWER_SUPPLY_STATUS_CHARGING) ? "CHG" : "DISCHG");
+	if (direction != ki_coeff.backup_vote) {
+		if ((direction == VOTE_STAY) ||
+			(ki_coeff.backup_vote == VOTE_ELECTION)) {
+			for (i = ki_coeff.loop_cnt - 1 ; i >= 0 ; i--) {
+				backup_gap[i] = 0;
+			}
+			ki_coeff.loop_cnt = 0;
+			direction = VOTE_STAY;
+		}
+	}
+out_polling:
+	ki_coeff.backup_vote = direction;
+out_init_polling:
+	schedule_delayed_work(&chip->polling_voltage_gap_dwork,
+			msecs_to_jiffies(schedule_time_s));
+}
+
+static void extension_fg_gen3_clear_ki_coeff_chg(struct fg_chip *chip)
+{
+	int rc = 0;
+	ki_coeff.ki_chg[HIGH_CURR] = chip->dt.ki_coeff_hi_chg;
+	rc = extension_fg_gen3_set_ki_coeff_chg(chip);
+
+	if (rc < 0) {
+		pr_err("Error in writing ki_coeff_chg, rc=%d\n", rc);
+	}
+}
+static void extension_fg_gen3_clear_ki_coeff_dischg(struct fg_chip *chip)
+{
+	int rc = 0, i = 0, msoc = 0;
+	int ki_coeff_low = KI_COEFF_LOW_DISCHG_DEFAULT;
+	int ki_coeff_med = KI_COEFF_MED_DISCHG_DEFAULT;
+	int ki_coeff_hi = KI_COEFF_HI_DISCHG_DEFAULT;
+
+	for (i = 0 ; i <= LOW_CURR ; i++) {
+		ki_coeff.ki_dischg[i][HIGH_CURR] = chip->dt.ki_coeff_hi_dischg[i];
+		ki_coeff.ki_dischg[i][MED_CURR] = chip->dt.ki_coeff_med_dischg[i];
+		ki_coeff.ki_dischg[i][LOW_CURR] = chip->dt.ki_coeff_low_dischg[i];
+		pr_debug("setting ki_dischg[%d]high:%d med:%d low%d\n",
+				i,
+				ki_coeff.ki_dischg[i][HIGH_CURR],
+				ki_coeff.ki_dischg[i][MED_CURR],
+				ki_coeff.ki_dischg[i][LOW_CURR]);
+	}
+
+	msoc = rescale.result;
+	for (i = KI_COEFF_SOC_LEVELS - 1; i >= 0; i--) {
+		if (msoc < chip->dt.ki_coeff_soc[i]) {
+			ki_coeff_hi = ki_coeff.ki_dischg[i][HIGH_CURR];
+			ki_coeff_med = ki_coeff.ki_dischg[i][MED_CURR];
+			ki_coeff_low = ki_coeff.ki_dischg[i][LOW_CURR];
+			break;
+		}
+	}
+	rc = override_fg_adjust_ki_coeff_dischg(chip,
+			ki_coeff_low, ki_coeff_med, ki_coeff_hi);
+
+	if (rc < 0) {
+		pr_err("Error in writing ki_coeff_dischg, rc=%d\n", rc);
+	}
+}
+static int extension_fg_gen3_set_ki_coeff(struct fg_chip *chip)
+{
+	int rc = 0, i = 0, msoc = 0;
+	int ki_coeff_low = KI_COEFF_LOW_DISCHG_DEFAULT;
+	int ki_coeff_med = KI_COEFF_MED_DISCHG_DEFAULT;
+	int ki_coeff_hi = KI_COEFF_HI_DISCHG_DEFAULT;
+	enum vote_direction current_set = VOTE_NONE;
+
+	if (rescale.result < 0)
+		return 0;
+
+	/* When change charging status */
+	if ((ki_coeff.backup_vote != VOTE_INIT) &&
+			(chip->prev_charge_status != chip->charge_status)) {
+		ki_coeff.backup_vote = VOTE_STAY;
+		ki_coeff.stay_cnt = 0;
+		ki_coeff.ki_comp = ki_coeff.ki_comp_bck;
+		if (ki_coeff.dischg_enable &&
+				(chip->charge_status ==	POWER_SUPPLY_STATUS_CHARGING))
+			extension_fg_gen3_clear_ki_coeff_dischg(chip);
+		else if (ki_coeff.chg_enable &&
+				(chip->charge_status ==	POWER_SUPPLY_STATUS_DISCHARGING))
+			extension_fg_gen3_clear_ki_coeff_chg(chip);
+		goto out_set_ki;
+	}
+
+	mutex_lock(&ki_coeff.direction_lock);
+	msoc = rescale.result;
+	current_set = ki_coeff.backup_vote;
+
+	switch (current_set) {
+	case VOTE_SUSPEND:
+		if (ki_coeff.dischg_enable &&
+				(chip->charge_status ==	POWER_SUPPLY_STATUS_DISCHARGING))
+			extension_fg_gen3_clear_ki_coeff_dischg(chip);
+		else if (ki_coeff.chg_enable &&
+				(chip->charge_status ==	POWER_SUPPLY_STATUS_CHARGING))
+			extension_fg_gen3_clear_ki_coeff_chg(chip);
+		break;
+	case VOTE_INIT:
+		extension_fg_gen3_clear_ki_coeff_chg(chip);
+		extension_fg_gen3_clear_ki_coeff_dischg(chip);
+		ki_coeff.backup_vote = VOTE_STAY;
+		break;
+	case VOTE_NONE:
+		ki_coeff.backup_vote = VOTE_STAY;
+		ki_coeff.stay_cnt = 0;
+		if (delayed_work_pending(&chip->polling_voltage_gap_dwork)) {
+			pr_info("Cancel the pending voltage check work\n");
+			cancel_delayed_work_sync(&chip->polling_voltage_gap_dwork);
+		}
+		schedule_delayed_work(&chip->polling_voltage_gap_dwork, msecs_to_jiffies(5000));
+		break;
+	case VOTE_INCREASE:
+	case VOTE_DECREASE:
+		if (ki_coeff.dischg_enable &&
+				(chip->charge_status == POWER_SUPPLY_STATUS_DISCHARGING)) {
+			for (i = KI_COEFF_SOC_LEVELS - 1; i >= 0; i--) {
+				if (msoc < chip->dt.ki_coeff_soc[i]) {
+					ki_coeff.ki_dischg[i][HIGH_CURR] =
+						max(ki_coeff.ki_dischg[i][HIGH_CURR] + current_set*ki_coeff.ki_comp, ki_coeff.ki_limit[MIN_KI]);
+					ki_coeff.ki_dischg[i][HIGH_CURR] =
+						min(ki_coeff.ki_dischg[i][HIGH_CURR], ki_coeff.ki_limit[MAX_KI]);
+					ki_coeff.ki_dischg[i][MED_CURR] =
+						max(ki_coeff.ki_dischg[i][MED_CURR] + current_set*ki_coeff.ki_comp, ki_coeff.ki_limit[MIN_KI]);
+					ki_coeff.ki_dischg[i][MED_CURR] =
+						min(ki_coeff.ki_dischg[i][MED_CURR], ki_coeff.ki_limit[MAX_KI]);
+					ki_coeff.ki_dischg[i][LOW_CURR] =
+						max(ki_coeff.ki_dischg[i][LOW_CURR] + current_set*ki_coeff.ki_comp, ki_coeff.ki_limit[MIN_KI]);
+					ki_coeff.ki_dischg[i][LOW_CURR] =
+						min(ki_coeff.ki_dischg[i][LOW_CURR], ki_coeff.ki_limit[MAX_KI]);
+
+					ki_coeff_hi = ki_coeff.ki_dischg[i][HIGH_CURR];
+					ki_coeff_med = ki_coeff.ki_dischg[i][MED_CURR];
+					ki_coeff_low = ki_coeff.ki_dischg[i][LOW_CURR];
+					break;
+				}
+			}
+
+			rc = override_fg_adjust_ki_coeff_dischg(chip,
+					ki_coeff_low, ki_coeff_med, ki_coeff_hi);
+			if (rc < 0) {
+				pr_err("Error in writing ki_coeff_dischg, rc=%d\n", rc);
+				mutex_unlock(&ki_coeff.direction_lock);
+				return rc;
+			}
+
+			pr_debug("dischg High: %d, Med: %d, Low:%d\n",
+				ki_coeff_hi, ki_coeff_med, ki_coeff_low);
+		}
+		else if (ki_coeff.chg_enable &&
+				(chip->charge_status == POWER_SUPPLY_STATUS_CHARGING)) {
+			ki_coeff.ki_chg[HIGH_CURR] = max(ki_coeff.ki_chg[HIGH_CURR] + current_set*ki_coeff.ki_comp, ki_coeff.ki_limit[MIN_KI]);
+			ki_coeff.ki_chg[HIGH_CURR] = min(ki_coeff.ki_chg[HIGH_CURR], ki_coeff.ki_limit[MAX_KI]);
+
+			rc = extension_fg_gen3_set_ki_coeff_chg(chip);
+			if (rc < 0) {
+				pr_err("Error in writing ki_coeff_chg, rc=%d\n", rc);
+				mutex_unlock(&ki_coeff.direction_lock);
+				return rc;
+			}
+			pr_debug("chg High: %d\n", ki_coeff.ki_chg[HIGH_CURR]);
+		}
+		ki_coeff.backup_vote = VOTE_ELECTION;
+
+		break;
+	default:
+
+		break;
+	}
+	mutex_unlock(&ki_coeff.direction_lock);
+out_set_ki:
 	return rc;
 }
 
@@ -1194,6 +1748,9 @@ static int extension_fg_load_dt(void)
 	tcomp.qnovo_charging = of_property_read_bool(tcomp_dtroot,
 		"tempcomp-qnovo-charging");
 
+	smooth_therm.smooth_filter_enable = of_property_read_bool(tcomp_dtroot,
+		"tempcomp-smooth-filter-enable");
+
 	if (j == tcomp.load_max) {
 		tcomp.load_done = true;
 
@@ -1203,6 +1760,32 @@ static int extension_fg_load_dt(void)
 			(j == tcomp.load_max) ? "done" : "error", j, tcomp.load_max,
 			tcomp.rise_cut ? "enabled" : "disabled", tcomp.rise_cut_trig,
 			tcomp.fall_cut ? "enabled" : "disabled", tcomp.fall_cut_trig);
+	}
+
+	return 0;
+}
+
+static int extension_fg_gen3_suspend(struct fg_chip *chip)
+{
+	if (smooth_therm.smooth_filter_enable)
+		smooth_therm.batt_therm_ready = false;
+
+	if (chip->dt.dynamic_ki_en) {
+		cancel_delayed_work_sync(&chip->polling_voltage_gap_dwork);
+		mutex_lock(&ki_coeff.direction_lock);
+		ki_coeff.backup_vote = VOTE_SUSPEND;
+		mutex_unlock(&ki_coeff.direction_lock);
+		extension_fg_gen3_set_ki_coeff(chip);
+	}
+
+	return 0;
+}
+
+static int extension_fg_gen3_resume(struct fg_chip *chip)
+{
+	if (chip->dt.dynamic_ki_en) {
+		ki_coeff.backup_vote = VOTE_NONE;
+		extension_fg_gen3_set_ki_coeff(chip);
 	}
 
 	return 0;

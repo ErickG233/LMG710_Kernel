@@ -96,13 +96,13 @@ struct broadcast_tdmb_sig_info
 
 struct broadcast_tdmb_ch_info
 {
-    unsigned int    ch_buf_addr;
+    unsigned long   ch_buf_addr;
     unsigned int    buf_len;
 };
 
 struct broadcast_tdmb_data_info
 {
-    unsigned int    data_buf_addr;
+    unsigned long   data_buf_addr;
     unsigned int    data_buf_size;
     unsigned int    copied_size;
     unsigned int    packet_cnt;

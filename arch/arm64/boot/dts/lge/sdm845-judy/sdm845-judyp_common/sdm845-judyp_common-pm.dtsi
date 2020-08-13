@@ -56,7 +56,6 @@
 		>;
 
 		tempcomp-offset-wlc-enable;
-		tempcomp-offset-wlc-rise-filter-enable;
 		tempcomp-offset-wlc-rise-filter-trigger = <430>;
 		tempcomp-offset-wlc-lcdoff = <
 			(-300) (-50)
@@ -114,9 +113,10 @@
 			900    (-10)
 		>;
 
-		tempcomp-qnovo-charging;
+//		tempcomp-qnovo-charging;
 		lg-monotonic-soc-enable;
 
+		tempcomp-smooth-filter-enable;
 		tempcomp-icoeff = <100>;
 	};
 

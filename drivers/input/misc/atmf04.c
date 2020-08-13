@@ -1618,6 +1618,9 @@ static ssize_t atmf04_show_regproxdata(struct device *dev,
   memset(buf_line, 0, sizeof(buf_line));
   memset(buf_regproxdata, 0, sizeof(buf_regproxdata));
 
+  // fix that read calibration done register in MID
+  check_firmware_ready(client);
+
   init_touch_md = atmf04_i2c_smbus_read_byte_data(client, I2C_ADDR_SYS_STAT);
 
   cs_per[0] = atmf04_i2c_smbus_read_byte_data(client,I2C_ADDR_PER_H);
@@ -2336,7 +2339,7 @@ static int atmf04_probe(struct i2c_client *client,
   struct atmf04_platform_data *platform_data;
 #endif
   int err = 0;
-#if defined(CONFIG_MACH_SDM845_JUDYLN) && defined(CONFIG_LGE_ONE_BINARY_SKU)
+#if (defined(CONFIG_MACH_SDM845_JUDYLN) || defined(CONFIG_MACH_SDM845_CAYMANSLM)) && defined(CONFIG_LGE_ONE_BINARY_SKU)
   int sku_value = -1;
 #endif
 
@@ -2368,7 +2371,7 @@ static int atmf04_probe(struct i2c_client *client,
     platform_data = client->dev.platform_data;
   }
 #endif
-#if defined(CONFIG_MACH_SDM845_JUDYLN) && defined(CONFIG_LGE_ONE_BINARY_SKU)
+#if (defined(CONFIG_MACH_SDM845_JUDYLN) || defined(CONFIG_MACH_SDM845_CAYMANSLM)) && defined(CONFIG_LGE_ONE_BINARY_SKU)
   ///Check SKU///
   sku_value = lge_get_sku_carrier();
   PINFO("ATMF04 probe, sku_value: %d\n", sku_value);

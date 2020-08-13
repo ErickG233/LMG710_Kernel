@@ -41,6 +41,8 @@
 #define RGB_DEFAULT_BLUE	0
 #define RGB_DEFAULT_GREEN	0
 
+#define TRUE_VIEW_MAX_STEP	30
+
 enum {
 	RED      = 0,
 	GREEN    = 1,
@@ -54,5 +56,15 @@ enum {
 	PRESET_SETP2_INDEX = 12,
 };
 
-int lge_color_manager_create_sysfs(struct device *panel_sysfs_dev);
+enum {
+	screen_mode_auto = 0,
+	screen_mode_cinema,
+	screen_mode_photos,
+	screen_mode_web,
+	screen_mode_sports,
+	screen_mode_game,
+	screen_mode_expert = 10,
+};
+
+int lge_color_manager_create_sysfs(struct dsi_panel *panel, struct device *panel_sysfs_dev);
 #endif /* LGE_COLOR_MANAGER_H */

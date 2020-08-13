@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -84,6 +84,93 @@ static u8 const vm_voltage_swing[4][4] = {
 	{0xFF, 0xFF, 0xFF, 0xFF}  /* sw1, 1.2 v, optional */
 };
 #endif
+
+#if IS_ENABLED(CONFIG_LGE_DISPLAY_COMMON)
+#include <linux/module.h>
+
+int param_get_byte_hex(char *buffer, const struct kernel_param *kp)
+{
+	return scnprintf(buffer, PAGE_SIZE, "0x%02X", *((u8*)kp->arg));
+}
+const struct kernel_param_ops param_ops_byte_hex = {
+    .set = param_set_byte,
+    .get = param_get_byte_hex
+};
+#define param_check_byte_hex(name, p) param_check_byte(name, p)
+
+#define P_LEVEL_MAX 4
+#define V_LEVEL_MAX 4
+
+static u8 vm_pre_emphasis_ovwr0[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+static u8 vm_pre_emphasis_ovwr1[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+static u8 vm_pre_emphasis_ovwr2[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+static u8 vm_pre_emphasis_ovwr3[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+static u8 *vm_pre_emphasis_ovwr[4] = {
+	vm_pre_emphasis_ovwr0,
+	vm_pre_emphasis_ovwr1,
+	vm_pre_emphasis_ovwr2,
+	vm_pre_emphasis_ovwr3,
+};
+module_param_array(vm_pre_emphasis_ovwr0, byte_hex, NULL, S_IRUGO|S_IWUSR);
+module_param_array(vm_pre_emphasis_ovwr1, byte_hex, NULL, S_IRUGO|S_IWUSR);
+module_param_array(vm_pre_emphasis_ovwr2, byte_hex, NULL, S_IRUGO|S_IWUSR);
+module_param_array(vm_pre_emphasis_ovwr3, byte_hex, NULL, S_IRUGO|S_IWUSR);
+
+static u8 get_vm_pre_emphasis(int v, int p)
+{
+	return vm_pre_emphasis_ovwr[v][p]==0xFF?vm_pre_emphasis[v][p]:vm_pre_emphasis_ovwr[v][p];
+}
+
+static u8 vm_voltage_swing_ovwr0[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+static u8 vm_voltage_swing_ovwr1[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+static u8 vm_voltage_swing_ovwr2[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+static u8 vm_voltage_swing_ovwr3[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+static u8 *vm_voltage_swing_ovwr[4] = {
+	vm_voltage_swing_ovwr0,
+	vm_voltage_swing_ovwr1,
+	vm_voltage_swing_ovwr2,
+	vm_voltage_swing_ovwr3,
+};
+module_param_array(vm_voltage_swing_ovwr0, byte_hex, NULL, S_IRUGO|S_IWUSR);
+module_param_array(vm_voltage_swing_ovwr1, byte_hex, NULL, S_IRUGO|S_IWUSR);
+module_param_array(vm_voltage_swing_ovwr2, byte_hex, NULL, S_IRUGO|S_IWUSR);
+module_param_array(vm_voltage_swing_ovwr3, byte_hex, NULL, S_IRUGO|S_IWUSR);
+
+static u8 get_vm_voltage_swing(int v, int p)
+{
+	return vm_voltage_swing_ovwr[v][p]==0xFF?vm_voltage_swing[v][p]:vm_voltage_swing_ovwr[v][p];
+}
+
+static void dp_parser_table(struct dp_parser *parser, char *name, u8** buf)
+{
+	struct device *dev = &parser->pdev->dev;
+	char property_name[1024] = {0,};
+	struct property *data = NULL;
+	int i = 0, cnt = 0;
+	int rc = 0;
+
+	for (i = 0; i < V_LEVEL_MAX; i++) {
+		snprintf(property_name, sizeof(property_name), "%s%d", name, i);
+		data = of_find_property(dev->of_node, property_name, &cnt);
+		if (data) {
+			cnt = (cnt>P_LEVEL_MAX)?P_LEVEL_MAX:cnt;
+			rc = of_property_read_u8_array(dev->of_node, property_name, buf[i], cnt);
+			if (rc) {
+				pr_warn("parse error: %s, rc=%d\n", property_name, rc);
+			}
+		}
+	}
+}
+
+void lge_dp_parser_pre_emphasis_ovwr(struct dp_parser *parser)
+{
+	dp_parser_table(parser, "lge,pre-emphasis-ovwr", vm_pre_emphasis_ovwr);
+}
+void lge_dp_parser_voltage_swing_ovwr(struct dp_parser *parser)
+{
+	dp_parser_table(parser, "lge,voltage-swing-ovwr", vm_voltage_swing_ovwr);
+}
+#endif // CONFIG_LGE_DISPLAY_COMMON
 
 struct dp_catalog_io {
 	struct dp_io_data *dp_ahb;
@@ -797,12 +884,10 @@ static void dp_catalog_ctrl_config_misc(struct dp_catalog_ctrl *ctrl,
 }
 
 static void dp_catalog_ctrl_config_msa(struct dp_catalog_ctrl *ctrl,
-					u32 rate, u32 stream_rate_khz,
-					bool fixed_nvid)
+					u32 rate, u32 stream_rate_khz)
 {
 	u32 pixel_m, pixel_n;
 	u32 mvid, nvid;
-	u64 mvid_calc;
 	u32 const nvid_fixed = 0x8000;
 	u32 const link_rate_hbr2 = 540000;
 	u32 const link_rate_hbr3 = 810000;
@@ -815,43 +900,30 @@ static void dp_catalog_ctrl_config_msa(struct dp_catalog_ctrl *ctrl,
 	}
 
 	catalog = dp_catalog_get_priv(ctrl);
-	if (fixed_nvid) {
-		pr_debug("use fixed NVID=0x%x\n", nvid_fixed);
-		nvid = nvid_fixed;
+	io_data = catalog->io.dp_mmss_cc;
 
-		pr_debug("link rate=%dkbps, stream_rate_khz=%uKhz",
-			rate, stream_rate_khz);
+	pixel_m = dp_read(catalog, io_data, MMSS_DP_PIXEL_M);
+	pixel_n = dp_read(catalog, io_data, MMSS_DP_PIXEL_N);
+	pr_debug("pixel_m=0x%x, pixel_n=0x%x\n", pixel_m, pixel_n);
 
-		/*
-		 * For intermediate results, use 64 bit arithmetic to avoid
-		 * loss of precision.
-		 */
-		mvid_calc = (u64) stream_rate_khz * nvid;
-		mvid_calc = div_u64(mvid_calc, rate);
+	mvid = (pixel_m & 0xFFFF) * 5;
+	nvid = (0xFFFF & (~pixel_n)) + (pixel_m & 0xFFFF);
 
-		/*
-		 * truncate back to 32 bits as this final divided value will
-		 * always be within the range of a 32 bit unsigned int.
-		 */
-		mvid = (u32) mvid_calc;
-	} else {
-		io_data = catalog->io.dp_mmss_cc;
+	if (nvid < nvid_fixed) {
+		u32 temp;
 
-		pixel_m = dp_read(catalog, io_data, MMSS_DP_PIXEL_M);
-		pixel_n = dp_read(catalog, io_data, MMSS_DP_PIXEL_N);
-		pr_debug("pixel_m=0x%x, pixel_n=0x%x\n", pixel_m, pixel_n);
-
-		mvid = (pixel_m & 0xFFFF) * 5;
-		nvid = (0xFFFF & (~pixel_n)) + (pixel_m & 0xFFFF);
-
-		pr_debug("rate = %d\n", rate);
-
-		if (link_rate_hbr2 == rate)
-			nvid *= 2;
-
-		if (link_rate_hbr3 == rate)
-			nvid *= 3;
+		temp = (nvid_fixed / nvid) * nvid;
+		mvid = (nvid_fixed / nvid) * mvid;
+		nvid = temp;
 	}
+
+	pr_debug("rate = %d\n", rate);
+
+	if (link_rate_hbr2 == rate)
+		nvid *= 2;
+
+	if (link_rate_hbr3 == rate)
+		nvid *= 3;
 
 	io_data = catalog->io.dp_link;
 	pr_debug("mvid=0x%x, nvid=0x%x\n", mvid, nvid);
@@ -1168,8 +1240,13 @@ static void dp_catalog_ctrl_update_vx_px(struct dp_catalog_ctrl *ctrl,
 
 	pr_debug("hw: v=%d p=%d\n", v_level, p_level);
 
+#if IS_ENABLED(CONFIG_LGE_DISPLAY_COMMON)
+	value0 = get_vm_voltage_swing(v_level, p_level);
+	value1 = get_vm_pre_emphasis(v_level, p_level);
+#else
 	value0 = vm_voltage_swing[v_level][p_level];
 	value1 = vm_pre_emphasis[v_level][p_level];
+#endif
 
 	/* program default setting first */
 

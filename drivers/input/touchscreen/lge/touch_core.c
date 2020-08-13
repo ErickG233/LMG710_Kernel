@@ -33,7 +33,6 @@
  *  Include to touch core Header File
  */
 #include <touch_core.h>
-#include <touch_common.h>
 
 u32 touch_debug_mask = BASE_INFO;
 /* Debug mask value
@@ -243,6 +242,9 @@ irqreturn_t touch_irq_thread(int irq, void *dev_id)
 
 		if (ts->intr_status & TOUCH_IRQ_AI_BUTTON)
 			touch_send_uevent(ts, TOUCH_UEVENT_AI_BUTTON);
+
+		if (ts->intr_status & TOUCH_IRQ_AI_PICK)
+			touch_send_uevent(ts, TOUCH_UEVENT_AI_PICK);
 	} else {
 		if (ret == -ERESTART) {
 			TOUCH_I("IRQ - IC reset delay = %d\n",
@@ -631,7 +633,8 @@ char *uevent_str[TOUCH_UEVENT_SIZE][2] = {
 	{"TOUCH_GESTURE_WAKEUP=SWIPE_UP", NULL},
 	{"TOUCH_GESTURE_WAKEUP=SWIPE_RIGHT", NULL},
 	{"TOUCH_GESTURE_WAKEUP=SWIPE_LEFT", NULL},
-	{"TOUCH_GESTURE_WAKEUP=AI_BUTTON", NULL}
+	{"TOUCH_GESTURE_WAKEUP=AI_BUTTON", NULL},
+	{"TOUCH_GESTURE_WAKEUP=AI_PICK", NULL}
 };
 
 static void touch_send_uevent(struct touch_core_data *ts, int type)
