@@ -136,8 +136,8 @@ enum vdd_gx_levels {
 	VDD_GX_NOMINAL,		/* NOM */
 	VDD_GX_NOMINAL_L1,		/* NOM1 */
 	VDD_GX_HIGH,		/* TURBO */
-	VDD_GX_HIGH_1,		/* TURBO */
 	VDD_GX_HIGH_L1,		/* TURBO1 */
+	VDD_GX_HIGH_L2,		/* TURBO2 */
 	VDD_GX_NUM,
 };
 
