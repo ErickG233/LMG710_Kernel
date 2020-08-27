@@ -1621,6 +1621,12 @@ CONFIG_CRYPTO_DEV_QCEDEV=y
 CONFIG_CRYPTO_DEV_QCOM_ICE=y
 
 #
+# Algorithms support
+#
+
+CONFIG_XOR_BLOCKS=y
+
+#
 # Certificates for signature checking
 #
 
