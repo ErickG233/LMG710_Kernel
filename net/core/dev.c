@@ -6558,14 +6558,8 @@ void __dev_set_rx_mode(struct net_device *dev)
 		}
 	}
 
-	if (ops->ndo_set_rx_mode) {
-//LGE_WIFI_S, protocol-wifi@lge.com, 20190124, Add debug msg for mdns
-		if (dev->flags&IFF_MULTICAST && !(dev->flags&IFF_ALLMULTI)) {
-			printk("ndo_set_rx_mode(multicast) Process %s (pid: %d)\n", current->comm, current->pid);			
-		}
-//LGE_WIFI_E, protocol-wifi@lge.com, 20190124, Add debug msg for mdns
+	if (ops->ndo_set_rx_mode)
 		ops->ndo_set_rx_mode(dev);
-	}
 }
 
 void dev_set_rx_mode(struct net_device *dev)
@@ -6936,8 +6930,7 @@ static int dev_new_index(struct net *net)
 {
 	int ifindex = net->ifindex;
 	for (;;) {
-		// LGE_CHANGE, add reset iface index condition when exceeded 1000 over(CN#04056525), 2019-06-26, ella.hwang@lge.com
-		if (++ifindex <= 0 || ifindex >= 1000)
+		if (++ifindex <= 0)
 			ifindex = 1;
 		if (!__dev_get_by_index(net, ifindex))
 			return net->ifindex = ifindex;
