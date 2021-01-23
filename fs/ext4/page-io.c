@@ -341,7 +341,6 @@ void ext4_io_submit(struct ext4_io_submit *io)
 	if (bio) {
 		int io_op_flags = io->io_wbc->sync_mode == WB_SYNC_ALL ?
 				  WRITE_SYNC : 0;
-
 		if (io->io_flags & EXT4_IO_ENCRYPTED)
 			io_op_flags |= REQ_NOENCRYPT;
 		bio_set_op_attrs(io->io_bio, REQ_OP_WRITE, io_op_flags);
