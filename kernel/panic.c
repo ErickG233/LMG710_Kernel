@@ -187,6 +187,10 @@ void panic(const char *fmt, ...)
 		dump_stack();
 #endif
 
+#ifdef CONFIG_MACH_LGE
+	console_uart_disable();
+#endif
+
 	/*
 	 * If we have crashed and we have a crash kernel loaded let it handle
 	 * everything else.
@@ -213,6 +217,10 @@ void panic(const char *fmt, ...)
 		 */
 		crash_smp_send_stop();
 	}
+
+#ifdef CONFIG_MACH_LGE
+	console_uart_enable();
+#endif
 
 	/*
 	 * Run any panic handlers, including those that might need to
