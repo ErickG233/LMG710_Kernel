@@ -1344,13 +1344,13 @@ static void rx_worker(struct kthread_work *work)
 irqreturn_t irq_handler(int irq, void *priv)
 {
 	struct edge_info *einfo = (struct edge_info *)priv;
-#ifdef CONFIG_LGE_PM
+#ifdef CONFIG_LGE_PM_DEBUG
 	struct irq_desc *desc = irq_to_desc(irq);
 	const char *name = "null";
 #endif
 	if (einfo->rx_reset_reg)
 		writel_relaxed(einfo->out_irq_mask, einfo->rx_reset_reg);
-#ifdef CONFIG_LGE_PM
+#ifdef CONFIG_LGE_PM_DEBUG
 	if(suspend_debug_irq_pin()){
 		if (desc == NULL)
 			name = "stray irq";

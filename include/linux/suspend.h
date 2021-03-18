@@ -267,7 +267,7 @@ extern void arch_suspend_disable_irqs(void);
  */
 extern void arch_suspend_enable_irqs(void);
 
-#ifdef CONFIG_LGE_PM
+#ifdef CONFIG_LGE_PM_DEBUG
 extern bool suspend_debug_irq_pin(void);
 #endif
 

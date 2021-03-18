@@ -1517,7 +1517,7 @@ static void msm_gpio_irq_handler(struct irq_desc *desc)
 		val = readl(pctrl->regs + g->intr_status_reg);
 		if (val & BIT(g->intr_status_bit)) {
 			irq_pin = irq_find_mapping(gc->irqdomain, i);
-#ifdef CONFIG_LGE_PM
+#ifdef CONFIG_LGE_PM_DEBUG
 			if (suspend_debug_irq_pin())
 				printk("%s : irq_pin = %d, GPIO[%d], "
 					"g->intr_status_reg = %u, "
