@@ -4314,11 +4314,12 @@ static int sma6101_shutdown(struct snd_soc_codec *codec)
 			regmap_read(sma6101->regmap, SMA6101_0A_SPK_VOL,
 						&cur_vol);
 
-			if (cur_vol > sma6101->init_vol)
+			if (cur_vol > sma6101->init_vol) {
 				dev_info(codec->dev, "%s : cur vol[%d]  new vol[%d]\n",
 				__func__, cur_vol, sma6101->init_vol);
 				regmap_write(sma6101->regmap,
 					SMA6101_0A_SPK_VOL, sma6101->init_vol);
+			}
 			mutex_unlock(&sma6101->lock);
 		}
 	}

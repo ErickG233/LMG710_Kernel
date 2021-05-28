@@ -523,8 +523,8 @@ void kgsl_dump_active_contexts(struct kgsl_device *device)
 	idr_for_each_entry (&device->context_idr, tmp_context, tmp_id) {
 		KGSL_DRV_ERR(device, "process %s pid %d created %d contexts",
 				tmp_context->proc_priv->comm,
-				tmp_context->proc_priv->pid,
-				tmp_context->proc_priv->ctxt_count);
+				pid_nr(tmp_context->proc_priv->pid),
+				atomic_read(&tmp_context->proc_priv->ctxt_count));
 	}
 	read_unlock(&device->context_lock);
 }

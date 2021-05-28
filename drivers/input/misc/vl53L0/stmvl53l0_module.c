@@ -1965,7 +1965,7 @@ static int stmvl53l0_ioctl_handler(struct file *file,
 						(uint8_t)parameter.value,
 						(uint8_t)parameter.value2);
 			} else {
-				if (data->enableDebug)
+				if (data->enableDebug) {
 					vl53l0_dbgmsg(
 					"Set Ref : Vhv:%u, PhaseCal:%u\n",
 					(uint8_t)parameter.value,
@@ -1975,6 +1975,7 @@ static int stmvl53l0_ioctl_handler(struct file *file,
 					    vl53l0_dev,
 					    (uint8_t)(parameter.value),
 					    (uint8_t)(parameter.value2));
+				}
 				data->VhvSettings = (uint8_t)parameter.value;
 				data->PhaseCal    = (uint8_t)(parameter.value2);
 			}

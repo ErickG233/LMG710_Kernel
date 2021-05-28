@@ -39,7 +39,7 @@ static u16 AverageImage[ROW_SIZE][COL_SIZE];
 
 
 #define TEST_TOTAL_NUM 15
-static const char const *test_name_str[TEST_TOTAL_NUM] = {
+static const char *test_name_str[TEST_TOTAL_NUM] = {
 	"U3_PT_TEST",
 	"OPEN_NODE_TEST",
 	"SHORT_NODE_TEST",
