@@ -64,7 +64,7 @@ static const char *debug_type[] = {
 };
 
 #define TCI_FAIL_NUM 10
-static const char const *tci_debug_str[TCI_FAIL_NUM] = {
+static const char *tci_debug_str[TCI_FAIL_NUM] = {
 	"SUCCESS",
 	"DISTANCE_INTER_TAP",
 	"DISTANCE_TOUCHSLOP",
@@ -78,7 +78,7 @@ static const char const *tci_debug_str[TCI_FAIL_NUM] = {
 };
 
 #define SWIPE_FAIL_NUM 11
-static const char const *swipe_debug_str[SWIPE_FAIL_NUM] = {
+static const char *swipe_debug_str[SWIPE_FAIL_NUM] = {
 	"ERROR",
 	"FINGER_FAST_RELEASE",
 	"MULTI_FINGER",
