@@ -1,5 +1,6 @@
-CONFIG_LOCALVERSION="-STABLE_KernelSu"
-# Linux/arm64 4.9.261_STABLE_KernelSu Kernel
+CONFIG_LOCALVERSION="-STABLE_Q_V9.0"
+# Linux/arm64 4.9.261_STABLE_Q_V9.0 Kernel
+
 
 
 #
